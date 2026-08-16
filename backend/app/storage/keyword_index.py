@@ -1,4 +1,4 @@
-"""Persistent custom inverted index and TF-IDF cosine retrieval."""
+"""Persistent custom inverted index with TF-IDF and BM25 retrieval."""
 
 from __future__ import annotations
 
@@ -24,7 +24,7 @@ class KeywordIndexError(RuntimeError):
 
 @dataclass(frozen=True, slots=True)
 class KeywordSearchHit:
-    """A scored chunk returned by TF-IDF retrieval."""
+    """A scored chunk returned by a keyword retrieval strategy."""
 
     chunk_id: str
     score: float
@@ -215,6 +215,14 @@ class KeywordIndex:
     def _idf(document_frequency: int, chunk_count: int) -> float:
         return math.log((chunk_count + 1) / (document_frequency + 1)) + 1.0
 
+    @staticmethod
+    def _bm25_idf(document_frequency: int, chunk_count: int) -> float:
+        """Return Robertson-Sparck Jones IDF with a positive lower bound."""
+
+        return math.log(
+            1.0 + (chunk_count - document_frequency + 0.5) / (document_frequency + 0.5)
+        )
+
     def _recompute_document_norms(self) -> None:
         chunk_count = len(self._chunks)
         norms: dict[str, float] = {}
@@ -297,6 +305,91 @@ class KeywordIndex:
                     )
                 )
 
+            hits.sort(key=lambda hit: (-hit.score, hit.chunk_id))
+            return hits[:top_k]
+
+    def search_bm25(
+        self,
+        query: str,
+        *,
+        top_k: int = 10,
+        candidate_limit: int = 200,
+        k1: float = 1.5,
+        b: float = 0.75,
+    ) -> list[KeywordSearchHit]:
+        """Return approximate candidates ranked with the Okapi BM25 formula."""
+
+        if top_k <= 0:
+            raise ValueError("top_k must be greater than zero.")
+        if candidate_limit <= 0:
+            raise ValueError("candidate_limit must be greater than zero.")
+        if k1 <= 0:
+            raise ValueError("k1 must be greater than zero.")
+        if not 0.0 <= b <= 1.0:
+            raise ValueError("b must be between zero and one.")
+
+        query_frequencies = Counter(self.analyzer.analyze(query))
+        if not query_frequencies:
+            return []
+
+        with self._lock:
+            chunk_count = len(self._chunks)
+            if chunk_count == 0:
+                return []
+            average_length = (
+                sum(
+                    max(0, int(chunk_record.get("length", 0)))
+                    for chunk_record in self._chunks.values()
+                )
+                / chunk_count
+            )
+            if average_length <= 0:
+                return []
+
+            raw_contributions: dict[str, dict[str, float]] = defaultdict(dict)
+            for term, query_frequency in query_frequencies.items():
+                term_postings = self._postings.get(term)
+                if not term_postings:
+                    continue
+                idf = self._bm25_idf(len(term_postings), chunk_count)
+                for chunk_id, positions in term_postings.items():
+                    term_frequency = len(positions)
+                    document_length = max(
+                        0,
+                        int(self._chunks[chunk_id].get("length", 0)),
+                    )
+                    length_factor = k1 * (
+                        1.0 - b + b * document_length / average_length
+                    )
+                    contribution = (
+                        query_frequency
+                        * idf
+                        * (
+                            term_frequency
+                            * (k1 + 1.0)
+                            / (term_frequency + length_factor)
+                        )
+                    )
+                    raw_contributions[chunk_id][term] = contribution
+
+            candidate_count = max(top_k, candidate_limit)
+            candidate_ids = sorted(
+                raw_contributions,
+                key=lambda chunk_id: (
+                    -sum(raw_contributions[chunk_id].values()),
+                    chunk_id,
+                ),
+            )[:candidate_count]
+
+            hits = [
+                KeywordSearchHit(
+                    chunk_id=chunk_id,
+                    score=sum(raw_contributions[chunk_id].values()),
+                    matched_terms=tuple(sorted(raw_contributions[chunk_id])),
+                    term_contributions=dict(raw_contributions[chunk_id]),
+                )
+                for chunk_id in candidate_ids
+            ]
             hits.sort(key=lambda hit: (-hit.score, hit.chunk_id))
             return hits[:top_k]
 

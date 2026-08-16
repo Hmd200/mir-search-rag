@@ -29,6 +29,18 @@ class KeywordSearchResponse(BaseModel):
     results: list[KeywordSearchResult]
 
 
+class BM25SearchResponse(BaseModel):
+    """Ranked response from the custom Okapi BM25 retrieval engine."""
+
+    query: str
+    mode: Literal["bm25"] = "bm25"
+    k1: float
+    b: float
+    result_count: int
+    elapsed_ms: float
+    results: list[KeywordSearchResult]
+
+
 class KeywordIndexStatsResponse(BaseModel):
     """Summary statistics for the custom inverted index."""
 

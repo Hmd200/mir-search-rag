@@ -98,3 +98,100 @@ def test_invalid_search_limits_are_rejected(
             top_k=top_k,
             candidate_limit=candidate_limit,
         )
+
+
+def test_bm25_prefers_rare_terms_and_reports_contributions(
+    tmp_path: Path,
+) -> None:
+    index = KeywordIndex(tmp_path / "bm25-rare.json")
+    index.upsert_document(
+        "document-a",
+        [("chunk-common", "retrieval ranking")],
+    )
+    index.upsert_document(
+        "document-b",
+        [("chunk-rare", "retrieval ranking quokka")],
+    )
+    index.upsert_document(
+        "document-c",
+        [("chunk-other", "retrieval storage")],
+    )
+
+    hits = index.search_bm25("retrieval quokka", top_k=3)
+
+    assert hits[0].chunk_id == "chunk-rare"
+    assert hits[0].matched_terms == ("quokka", "retriev")
+    assert hits[0].term_contributions["quokka"] > hits[0].term_contributions["retriev"]
+
+
+def test_bm25_saturates_repeated_term_frequency(tmp_path: Path) -> None:
+    index = KeywordIndex(tmp_path / "bm25-saturation.json")
+    index.upsert_document(
+        "document",
+        [
+            ("single", "signal"),
+            ("repeated", "signal " * 10),
+        ],
+    )
+
+    hits = index.search_bm25("signal", top_k=2, b=0.0)
+    scores = {hit.chunk_id: hit.score for hit in hits}
+
+    assert scores["repeated"] > scores["single"]
+    assert scores["repeated"] < scores["single"] * 2.5
+
+
+def test_bm25_normalizes_chunk_length(tmp_path: Path) -> None:
+    index = KeywordIndex(tmp_path / "bm25-length.json")
+    index.upsert_document(
+        "document",
+        [
+            ("short", "signal"),
+            (
+                "long",
+                (
+                    "signal alpha beta gamma delta epsilon zeta eta theta iota "
+                    "kappa lambda mu nu xi omicron pi rho sigma tau"
+                ),
+            ),
+        ],
+    )
+
+    hits = index.search_bm25("signal", top_k=2, b=1.0)
+
+    assert [hit.chunk_id for hit in hits] == ["short", "long"]
+
+
+def test_bm25_top_k_order_is_deterministic(tmp_path: Path) -> None:
+    index = KeywordIndex(tmp_path / "bm25-order.json")
+    index.upsert_document(
+        "document",
+        [
+            ("chunk-b", "equal signal"),
+            ("chunk-a", "equal signal"),
+        ],
+    )
+
+    hits = index.search_bm25("signal", top_k=1, candidate_limit=1)
+
+    assert [hit.chunk_id for hit in hits] == ["chunk-a"]
+
+
+@pytest.mark.parametrize(
+    ("k1", "b"),
+    [(0.0, 0.75), (-1.0, 0.75), (1.5, -0.1), (1.5, 1.1)],
+)
+def test_invalid_bm25_tunables_are_rejected(
+    tmp_path: Path,
+    k1: float,
+    b: float,
+) -> None:
+    index = KeywordIndex(tmp_path / "bm25-tunables.json")
+    index.upsert_document("document", [("chunk", "signal")])
+
+    with pytest.raises(ValueError):
+        index.search_bm25(
+            "signal",
+            k1=k1,
+            b=b,
+        )

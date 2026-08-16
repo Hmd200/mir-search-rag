@@ -211,6 +211,10 @@ def test_uploaded_document_is_searchable_and_removed_from_index(
         "/api/v1/search/keyword",
         params={"q": "cosine retrieval", "top_k": 5},
     )
+    bm25_response = document_api.client.get(
+        "/api/v1/search/bm25",
+        params={"q": "cosine retrieval", "top_k": 5, "k1": 1.2, "b": 0.6},
+    )
     stats_response = document_api.client.get("/api/v1/search/keyword/stats")
     semantic_response = document_api.client.get(
         "/api/v1/search/semantic",
@@ -222,6 +226,12 @@ def test_uploaded_document_is_searchable_and_removed_from_index(
     assert search_response.json()["mode"] == "tfidf"
     assert search_response.json()["results"][0]["document_id"] == document_id
     assert search_response.json()["results"][0]["page_number"] == 1
+    assert bm25_response.status_code == 200
+    assert bm25_response.json()["mode"] == "bm25"
+    assert bm25_response.json()["k1"] == 1.2
+    assert bm25_response.json()["b"] == 0.6
+    assert bm25_response.json()["results"][0]["document_id"] == document_id
+    assert bm25_response.json()["results"][0]["page_number"] == 1
     assert stats_response.json()["document_count"] == 1
     assert stats_response.json()["chunk_count"] == 1
     assert semantic_response.status_code == 200
@@ -238,6 +248,11 @@ def test_uploaded_document_is_searchable_and_removed_from_index(
         params={"q": "cosine retrieval"},
     )
     assert after_delete.json()["results"] == []
+    bm25_after_delete = document_api.client.get(
+        "/api/v1/search/bm25",
+        params={"q": "cosine retrieval"},
+    )
+    assert bm25_after_delete.json()["results"] == []
     semantic_after_delete = document_api.client.get(
         "/api/v1/search/semantic",
         params={"q": "cosine retrieval"},

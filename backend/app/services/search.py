@@ -6,7 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models import Chunk
-from app.storage.keyword_index import KeywordIndex
+from app.storage.keyword_index import KeywordIndex, KeywordSearchHit
 
 
 @dataclass(frozen=True, slots=True)
@@ -43,6 +43,60 @@ class KeywordSearchService:
             top_k=top_k,
             candidate_limit=max(top_k, candidate_limit),
         )
+        if not hits:
+            return []
+
+        chunks = {
+            chunk.id: chunk
+            for chunk in self.session.scalars(
+                select(Chunk).where(Chunk.id.in_([hit.chunk_id for hit in hits]))
+            )
+        }
+
+        results: list[KeywordSearchRecord] = []
+        for hit in hits:
+            chunk = chunks.get(hit.chunk_id)
+            if chunk is None:
+                continue
+            results.append(
+                KeywordSearchRecord(
+                    chunk_id=chunk.id,
+                    document_id=chunk.document_id,
+                    document_title=chunk.document.title,
+                    score=hit.score,
+                    text=chunk.text,
+                    page_number=chunk.page_number,
+                    section_title=chunk.section_title,
+                    matched_terms=hit.matched_terms,
+                    term_contributions=hit.term_contributions,
+                )
+            )
+        return results
+
+    def search_bm25(
+        self,
+        query: str,
+        *,
+        top_k: int,
+        candidate_limit: int,
+        k1: float,
+        b: float,
+    ) -> list[KeywordSearchRecord]:
+        """Run BM25 and hydrate its ranked chunks with citation metadata."""
+
+        hits = self.keyword_index.search_bm25(
+            query,
+            top_k=top_k,
+            candidate_limit=max(top_k, candidate_limit),
+            k1=k1,
+            b=b,
+        )
+        return self._hydrate(hits)
+
+    def _hydrate(
+        self,
+        hits: list[KeywordSearchHit],
+    ) -> list[KeywordSearchRecord]:
         if not hits:
             return []
 
