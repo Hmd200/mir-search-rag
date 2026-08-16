@@ -49,6 +49,7 @@ class Settings(BaseSettings):
     vector_collection_name: str = "mir_chunks"
     ollama_base_url: str = "http://127.0.0.1:11434"
     ollama_model: str = "qwen3:8b"
+    llm_provider: str = "ollama"
 
     max_upload_size_mb: int = 25
     chunk_size: int = 500
