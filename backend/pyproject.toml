@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mir-search-backend"
+version = "0.1.0"
+description = "Backend for the dual-engine document search and RAG system."
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "fastapi[standard-no-fastapi-cloud-cli]>=0.116,<1.0",
+    "pydantic-settings>=2.10,<3.0",
+    "sqlalchemy>=2.0,<3.0",
+    "pymupdf>=1.26,<2.0",
+    "python-docx>=1.2,<2.0",
+    "numpy>=2.0,<3.0",
+    "nltk>=3.9,<4.0",
+    "chromadb>=1.5,<2.0",
+    "sentence-transformers>=5.5,<6.0",
+    "trafilatura>=2.1,<3.0",
+    "ollama>=0.5,<1.0",
+    "httpx>=0.28,<1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.4,<10.0",
+    "pytest-asyncio>=1.1,<2.0",
+    "pytest-cov>=6.2,<8.0",
+    "ruff>=0.12,<1.0",
+    "mypy>=1.17,<2.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["app*"]
