@@ -36,7 +36,8 @@ export type KeywordSearchResult = {
   document_title: string;
   score: number;
   text: string;
-  page_number: number | null;
+  page_start: number | null;
+  page_end: number | null;
   section_title: string | null;
   matched_terms: string[];
   term_contributions: Record<string, number>;
@@ -83,7 +84,8 @@ export type SemanticSearchResult = {
   score: number;
   distance: number;
   text: string;
-  page_number: number | null;
+  page_start: number | null;
+  page_end: number | null;
   section_title: string | null;
 };
 
@@ -131,7 +133,8 @@ export type RagCitedChunk = {
   chunk_id: string;
   document_id: string;
   document_title: string;
-  page_number: number | null;
+  page_start: number | null;
+  page_end: number | null;
   text: string;
   score: number;
   retrieval_score: number;

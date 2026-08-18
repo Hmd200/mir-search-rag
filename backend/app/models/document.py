@@ -124,13 +124,25 @@ class Chunk(Base):
         CheckConstraint("position >= 0", name="ck_chunks_position_nonnegative"),
         CheckConstraint("token_count >= 0", name="ck_chunks_token_count_nonnegative"),
         CheckConstraint(
-            "page_number IS NULL OR page_number >= 1",
-            name="ck_chunks_page_number_positive",
+            "page_start IS NULL OR page_start >= 1",
+            name="ck_chunks_page_start_positive",
+        ),
+        CheckConstraint(
+            "page_end IS NULL OR page_end >= 1",
+            name="ck_chunks_page_end_positive",
+        ),
+        CheckConstraint(
+            "(page_start IS NULL) = (page_end IS NULL)",
+            name="ck_chunks_page_span_nullability",
+        ),
+        CheckConstraint(
+            "page_start IS NULL OR page_end >= page_start",
+            name="ck_chunks_page_span_order",
         ),
         CheckConstraint("char_start >= 0", name="ck_chunks_char_start_nonnegative"),
         CheckConstraint("char_end >= char_start", name="ck_chunks_char_range"),
         CheckConstraint("length(text) > 0", name="ck_chunks_text_not_empty"),
-        Index("ix_chunks_document_page", "document_id", "page_number"),
+        Index("ix_chunks_document_page", "document_id", "page_start"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
@@ -140,7 +152,10 @@ class Chunk(Base):
     position: Mapped[int] = mapped_column(Integer)
     text: Mapped[str] = mapped_column(Text)
     token_count: Mapped[int] = mapped_column(Integer, default=0)
-    page_number: Mapped[int | None] = mapped_column(Integer)
+    # Re-upload existing documents to get cross-page chunks; rows stored
+    # under the old page-per-chunk rule are not rewritten in place.
+    page_start: Mapped[int | None] = mapped_column(Integer)
+    page_end: Mapped[int | None] = mapped_column(Integer)
     section_title: Mapped[str | None] = mapped_column(String(500))
     char_start: Mapped[int] = mapped_column(Integer, default=0)
     char_end: Mapped[int] = mapped_column(Integer)

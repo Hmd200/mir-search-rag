@@ -53,6 +53,7 @@ class ChunkDraft:
     token_count: int
     char_start: int
     char_end: int
-    page_number: int | None = None
+    page_start: int | None = None
+    page_end: int | None = None
     section_title: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)

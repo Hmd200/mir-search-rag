@@ -14,7 +14,8 @@ class SemanticSearchResult(BaseModel):
     score: float
     distance: float
     text: str
-    page_number: int | None
+    page_start: int | None
+    page_end: int | None
     section_title: str | None
 
 

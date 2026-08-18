@@ -35,7 +35,8 @@ class RagCitedChunk:
     chunk_id: str
     document_id: str
     document_title: str
-    page_number: int | None
+    page_start: int | None
+    page_end: int | None
     text: str
     score: float
     retrieval_score: float
@@ -49,7 +50,8 @@ class RagContextChunk:
     chunk_id: str
     document_id: str
     document_title: str
-    page_number: int | None
+    page_start: int | None
+    page_end: int | None
     section_title: str | None
     text: str
     retrieval_score: float
@@ -76,11 +78,12 @@ def _format_context_chunk(
     index: int,
     record: RagContextChunk,
 ) -> str:
-    page = (
-        f", page {record.page_number}"
-        if record.page_number is not None
-        else ""
-    )
+    page = ""
+    if record.page_start is not None and record.page_end is not None:
+        if record.page_start == record.page_end:
+            page = f", page {record.page_start}"
+        else:
+            page = f", pages {record.page_start}-{record.page_end}"
     return f"[{index}] {record.document_title}{page}\n{record.text}"
 
 
@@ -139,7 +142,8 @@ def _cited_chunks(
                 chunk_id=record.chunk_id,
                 document_id=record.document_id,
                 document_title=record.document_title,
-                page_number=record.page_number,
+                page_start=record.page_start,
+                page_end=record.page_end,
                 text=record.text,
                 score=record.retrieval_score,
                 retrieval_score=record.retrieval_score,
@@ -159,7 +163,8 @@ def _to_context_chunk(
         chunk_id=record.chunk_id,
         document_id=record.document_id,
         document_title=record.document_title,
-        page_number=record.page_number,
+        page_start=record.page_start,
+        page_end=record.page_end,
         section_title=record.section_title,
         text=record.text,
         retrieval_score=retrieval_score,

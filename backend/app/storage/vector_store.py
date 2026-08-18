@@ -27,7 +27,8 @@ class VectorChunk:
     document_id: str
     text: str
     position: int
-    page_number: int | None = None
+    page_start: int | None = None
+    page_end: int | None = None
     section_title: str | None = None
 
 
@@ -70,8 +71,10 @@ class ChromaVectorStore:
             "document_id": chunk.document_id,
             "position": chunk.position,
         }
-        if chunk.page_number is not None:
-            metadata["page_number"] = chunk.page_number
+        if chunk.page_start is not None:
+            metadata["page_start"] = chunk.page_start
+        if chunk.page_end is not None:
+            metadata["page_end"] = chunk.page_end
         if chunk.section_title:
             metadata["section_title"] = chunk.section_title
         return metadata

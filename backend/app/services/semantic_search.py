@@ -20,7 +20,8 @@ class SemanticSearchRecord:
     score: float
     distance: float
     text: str
-    page_number: int | None
+    page_start: int | None
+    page_end: int | None
     section_title: str | None
 
 
@@ -65,7 +66,8 @@ class SemanticSearchService:
                     score=hit.score,
                     distance=hit.distance,
                     text=chunk.text,
-                    page_number=chunk.page_number,
+                    page_start=chunk.page_start,
+                    page_end=chunk.page_end,
                     section_title=chunk.section_title,
                 )
             )

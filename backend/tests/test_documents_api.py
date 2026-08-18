@@ -225,13 +225,15 @@ def test_uploaded_document_is_searchable_and_removed_from_index(
     assert search_response.status_code == 200
     assert search_response.json()["mode"] == "tfidf"
     assert search_response.json()["results"][0]["document_id"] == document_id
-    assert search_response.json()["results"][0]["page_number"] == 1
+    assert search_response.json()["results"][0]["page_start"] == 1
+    assert search_response.json()["results"][0]["page_end"] == 1
     assert bm25_response.status_code == 200
     assert bm25_response.json()["mode"] == "bm25"
     assert bm25_response.json()["k1"] == 1.2
     assert bm25_response.json()["b"] == 0.6
     assert bm25_response.json()["results"][0]["document_id"] == document_id
-    assert bm25_response.json()["results"][0]["page_number"] == 1
+    assert bm25_response.json()["results"][0]["page_start"] == 1
+    assert bm25_response.json()["results"][0]["page_end"] == 1
     assert stats_response.json()["document_count"] == 1
     assert stats_response.json()["chunk_count"] == 1
     assert semantic_response.status_code == 200

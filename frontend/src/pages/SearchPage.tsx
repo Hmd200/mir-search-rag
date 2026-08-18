@@ -29,13 +29,27 @@ type DisplayHit = {
   document_title: string;
   score: number;
   text: string;
-  page_number: number | null;
+  page_start: number | null;
+  page_end: number | null;
   section_title: string | null;
   matched_terms?: string[];
   term_contributions?: Record<string, number>;
 };
 
 const CITATION_MARKER = /\[(\d+)\]/g;
+
+function formatPageRange(
+  pageStart: number | null,
+  pageEnd: number | null,
+): string | null {
+  if (pageStart === null || pageEnd === null) {
+    return null;
+  }
+  if (pageStart === pageEnd) {
+    return `Page ${pageStart}`;
+  }
+  return `Pages ${pageStart}-${pageEnd}`;
+}
 
 function toKeywordHits(results: KeywordSearchResult[]): DisplayHit[] {
   return results.map((result) => ({
@@ -44,7 +58,8 @@ function toKeywordHits(results: KeywordSearchResult[]): DisplayHit[] {
     document_title: result.document_title,
     score: result.score,
     text: result.text,
-    page_number: result.page_number,
+    page_start: result.page_start,
+    page_end: result.page_end,
     section_title: result.section_title,
     matched_terms: result.matched_terms,
     term_contributions: result.term_contributions,
@@ -58,7 +73,8 @@ function toSemanticHits(results: SemanticSearchResult[]): DisplayHit[] {
     document_title: result.document_title,
     score: result.score,
     text: result.text,
-    page_number: result.page_number,
+    page_start: result.page_start,
+    page_end: result.page_end,
     section_title: result.section_title,
   }));
 }
@@ -188,6 +204,7 @@ function ResultCard({ hit }: { hit: DisplayHit }) {
   const [open, setOpen] = useState(false);
   const hasContributions =
     hit.term_contributions && Object.keys(hit.term_contributions).length > 0;
+  const pageLabel = formatPageRange(hit.page_start, hit.page_end);
 
   return (
     <article className="rounded-2xl border border-rule bg-card p-4 sm:p-5">
@@ -196,7 +213,7 @@ function ResultCard({ hit }: { hit: DisplayHit }) {
           <h2 className="font-display text-xl text-ink">{hit.document_title}</h2>
           <p className="text-sm text-ink-soft">
             Score {formatScore(hit.score)}
-            {hit.page_number !== null ? ` · Page ${hit.page_number}` : ""}
+            {pageLabel ? ` · ${pageLabel}` : ""}
             {hit.section_title ? ` · ${hit.section_title}` : ""}
           </p>
         </div>
@@ -314,7 +331,7 @@ function CitedChunkCard({
           </p>
           <h2 className="font-display text-xl text-ink">{chunk.document_title}</h2>
           <p className="text-sm text-ink-soft">
-            {chunk.page_number !== null ? `Page ${chunk.page_number}` : "Page unknown"}
+            {formatPageRange(chunk.page_start, chunk.page_end) ?? "Page unknown"}
             {" · "}
             Retrieval {formatScore(chunk.retrieval_score)}
             {chunk.rerank_score !== null

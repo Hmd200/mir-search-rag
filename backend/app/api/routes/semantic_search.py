@@ -52,7 +52,8 @@ def semantic_search(
             score=record.score,
             distance=record.distance,
             text=record.text,
-            page_number=record.page_number,
+            page_start=record.page_start,
+            page_end=record.page_end,
             section_title=record.section_title,
         )
         for record in records

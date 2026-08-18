@@ -220,7 +220,8 @@ class DocumentService:
                     position=chunk.position,
                     text=chunk.text,
                     token_count=chunk.token_count,
-                    page_number=chunk.page_number,
+                    page_start=chunk.page_start,
+                    page_end=chunk.page_end,
                     section_title=chunk.section_title,
                     char_start=chunk.char_start,
                     char_end=chunk.char_end,
@@ -247,7 +248,8 @@ class DocumentService:
                         document_id=document.id,
                         text=chunk.text,
                         position=chunk.position,
-                        page_number=chunk.page_number,
+                        page_start=chunk.page_start,
+                        page_end=chunk.page_end,
                         section_title=chunk.section_title,
                     )
                     for chunk in document.chunks
@@ -356,7 +358,8 @@ class DocumentService:
                 document_id=document.id,
                 text=chunk.text,
                 position=chunk.position,
-                page_number=chunk.page_number,
+                page_start=chunk.page_start,
+                page_end=chunk.page_end,
                 section_title=chunk.section_title,
             )
             for chunk in document.chunks

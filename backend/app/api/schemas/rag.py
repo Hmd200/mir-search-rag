@@ -17,7 +17,8 @@ class RagCitedChunk(BaseModel):
     chunk_id: str
     document_id: str
     document_title: str
-    page_number: int | None
+    page_start: int | None
+    page_end: int | None
     text: str
     score: float
     retrieval_score: float

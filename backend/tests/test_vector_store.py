@@ -40,7 +40,8 @@ def test_vector_store_upserts_searches_and_persists(tmp_path: Path) -> None:
                 document_id="document-a",
                 text="neural neural retrieval",
                 position=0,
-                page_number=2,
+                page_start=2,
+                page_end=2,
             )
         ],
         embedder,

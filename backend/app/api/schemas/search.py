@@ -13,7 +13,8 @@ class KeywordSearchResult(BaseModel):
     document_title: str
     score: float
     text: str
-    page_number: int | None
+    page_start: int | None
+    page_end: int | None
     section_title: str | None
     matched_terms: tuple[str, ...]
     term_contributions: dict[str, float]

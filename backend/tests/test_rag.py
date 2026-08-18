@@ -17,7 +17,8 @@ def _record(index: int) -> SemanticSearchRecord:
         score=1.0 - (index * 0.05),
         distance=0.1 * index,
         text=f"Chunk {index} discusses retrieval ranking.",
-        page_number=index,
+        page_start=index,
+        page_end=index,
         section_title=None,
     )
 

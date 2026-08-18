@@ -25,7 +25,8 @@ class KeywordSearchRecord:
     document_title: str
     score: float
     text: str
-    page_number: int | None
+    page_start: int | None
+    page_end: int | None
     section_title: str | None
     matched_terms: tuple[str, ...]
     term_contributions: dict[str, float]
@@ -230,7 +231,8 @@ class KeywordSearchService:
                     document_title=chunk.document.title,
                     score=hit.score,
                     text=chunk.text,
-                    page_number=chunk.page_number,
+                    page_start=chunk.page_start,
+                    page_end=chunk.page_end,
                     section_title=chunk.section_title,
                     matched_terms=hit.matched_terms,
                     term_contributions=hit.term_contributions,

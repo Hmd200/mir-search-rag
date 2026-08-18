@@ -53,7 +53,8 @@ def _record(
         score=score,
         distance=1.0 - score,
         text=text,
-        page_number=1,
+        page_start=1,
+        page_end=1,
         section_title=None,
     )
 

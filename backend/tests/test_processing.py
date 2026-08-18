@@ -82,15 +82,15 @@ def test_chunker_has_overlap_and_stable_offsets() -> None:
         "nine ten eleven",
     ]
     assert [chunk.position for chunk in chunks] == [0, 1, 2, 3]
-    assert all(chunk.page_number == 4 for chunk in chunks)
+    assert all(chunk.page_start == 4 and chunk.page_end == 4 for chunk in chunks)
     assert all(
         text[chunk.char_start : chunk.char_end] == chunk.text for chunk in chunks
     )
 
 
-def test_chunks_never_cross_page_boundaries() -> None:
-    first = "one two three four"
-    second = "five six seven eight"
+def test_chunks_can_span_page_boundaries() -> None:
+    first = " ".join(f"p1w{index}" for index in range(8))
+    second = " ".join(f"p2w{index}" for index in range(8))
     full_text = f"{first}\n\n{second}"
     document = ExtractedDocument(
         title="Two pages",
@@ -102,11 +102,48 @@ def test_chunks_never_cross_page_boundaries() -> None:
         ),
     )
 
+    chunks = DocumentChunker(chunk_size=5, chunk_overlap=2).split(document)
+
+    assert all(
+        full_text[chunk.char_start : chunk.char_end] == chunk.text
+        for chunk in chunks
+    )
+    same_page = [chunk for chunk in chunks if chunk.page_start == chunk.page_end]
+    spanned = [chunk for chunk in chunks if chunk.page_start != chunk.page_end]
+    assert same_page
+    assert all(chunk.page_start == chunk.page_end for chunk in same_page)
+    assert spanned
+    assert all(
+        chunk.page_start is not None
+        and chunk.page_end is not None
+        and chunk.page_start < chunk.page_end
+        for chunk in spanned
+    )
+    assert spanned[0].page_start == 1
+    assert spanned[0].page_end == 2
+
+
+def test_short_pages_merge_into_one_spanning_chunk() -> None:
+    first = "one two three four"
+    second = "five six seven eight"
+    full_text = f"{first}\n\n{second}"
+    document = ExtractedDocument(
+        title="Two short pages",
+        source_format="pdf",
+        text=full_text,
+        segments=(
+            ExtractedSegment(text=first, char_start=0, page_number=1),
+            ExtractedSegment(text=second, char_start=len(first) + 2, page_number=2),
+        ),
+    )
+
     chunks = DocumentChunker(chunk_size=10, chunk_overlap=2).split(document)
 
-    assert len(chunks) == 2
-    assert [chunk.page_number for chunk in chunks] == [1, 2]
-    assert [chunk.text for chunk in chunks] == [first, second]
+    assert len(chunks) == 1
+    assert chunks[0].page_start == 1
+    assert chunks[0].page_end == 2
+    assert chunks[0].page_start < chunks[0].page_end
+    assert full_text[chunks[0].char_start : chunks[0].char_end] == chunks[0].text
 
 
 def test_unsupported_file_type_is_rejected(tmp_path: Path) -> None:

@@ -36,7 +36,8 @@ def test_document_and_chunk_round_trip(tmp_path: Path) -> None:
             position=0,
             text="A searchable passage with stable citation metadata.",
             token_count=8,
-            page_number=3,
+            page_start=3,
+            page_end=3,
             char_start=0,
             char_end=51,
         )
@@ -52,7 +53,8 @@ def test_document_and_chunk_round_trip(tmp_path: Path) -> None:
     assert stored_document.source_type is SourceType.UPLOAD
     assert stored_document.keyword_indexed is False
     assert stored_document.vector_indexed is False
-    assert stored_document.chunks[0].page_number == 3
+    assert stored_document.chunks[0].page_start == 3
+    assert stored_document.chunks[0].page_end == 3
     assert len(stored_document.chunks[0].id) == 36
 
     session.close()
