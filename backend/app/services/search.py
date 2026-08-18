@@ -1,16 +1,19 @@
 """Classical retrieval service joining index hits with stored metadata."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models import Chunk
+from app.retrieval.reranker import CrossEncoderReranker, reranker_from_settings
 from app.storage.keyword_index import (
     KeywordIndex,
     KeywordSearchHit,
     PrfExpansion,
 )
+
+_RERANK_RETRIEVE_K = 25
 
 
 @dataclass(frozen=True, slots=True)
@@ -26,6 +29,8 @@ class KeywordSearchRecord:
     section_title: str | None
     matched_terms: tuple[str, ...]
     term_contributions: dict[str, float]
+    retrieval_score: float | None = None
+    rerank_score: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,14 +39,50 @@ class KeywordSearchServiceOutcome:
 
     records: list[KeywordSearchRecord]
     expansion: PrfExpansion | None = None
+    reranked: bool = False
 
 
 class KeywordSearchService:
     """Run the custom TF-IDF engine and hydrate ranked chunk results."""
 
-    def __init__(self, session: Session, keyword_index: KeywordIndex) -> None:
+    def __init__(
+        self,
+        session: Session,
+        keyword_index: KeywordIndex,
+        reranker: CrossEncoderReranker | None = None,
+    ) -> None:
         self.session = session
         self.keyword_index = keyword_index
+        self._reranker = reranker
+
+    def _ensure_reranker(self) -> CrossEncoderReranker:
+        if self._reranker is None:
+            self._reranker = reranker_from_settings()
+        return self._reranker
+
+    def _apply_rerank(
+        self,
+        query: str,
+        records: list[KeywordSearchRecord],
+        *,
+        top_n: int,
+    ) -> list[KeywordSearchRecord]:
+        ranked = self._ensure_reranker().rerank(
+            query,
+            records,
+            top_n=top_n,
+        )
+        reranked_records: list[KeywordSearchRecord] = []
+        for item in ranked:
+            record = item.chunk
+            reranked_records.append(
+                replace(
+                    record,
+                    retrieval_score=item.retrieval_score,
+                    rerank_score=item.rerank_score,
+                )
+            )
+        return reranked_records
 
     def search(
         self,
@@ -55,11 +96,13 @@ class KeywordSearchService:
         expansion_terms: int | None = None,
         alpha: float = 1.0,
         beta: float = 0.75,
+        use_reranker: bool = False,
     ) -> KeywordSearchServiceOutcome:
+        retrieve_k = _RERANK_RETRIEVE_K if use_reranker else top_k
         if use_prf:
             prf = self.keyword_index.search_with_prf(
                 query,
-                top_k=top_k,
+                top_k=retrieve_k,
                 feedback_docs=feedback_docs,
                 max_expansion_terms=(
                     expansion_terms
@@ -69,21 +112,32 @@ class KeywordSearchService:
                 alpha=alpha,
                 beta=beta,
                 scoring_mode="tfidf",
-                candidate_limit=max(top_k, candidate_limit),
+                candidate_limit=max(retrieve_k, candidate_limit),
             )
-            return KeywordSearchServiceOutcome(
-                records=self._hydrate(list(prf.hits)),
-                expansion=prf.expansion,
+            records = self._hydrate(list(prf.hits))
+            expansion = prf.expansion
+        else:
+            hits = self.keyword_index.search(
+                query,
+                top_k=retrieve_k,
+                candidate_limit=max(retrieve_k, candidate_limit),
             )
+            records = self._hydrate(hits)
+            expansion = None
 
-        hits = self.keyword_index.search(
-            query,
-            top_k=top_k,
-            candidate_limit=max(top_k, candidate_limit),
-        )
+        reranked = False
+        if use_reranker and records:
+            records = self._apply_rerank(
+                query,
+                records,
+                top_n=top_k,
+            )
+            reranked = True
+
         return KeywordSearchServiceOutcome(
-            records=self._hydrate(hits),
-            expansion=None,
+            records=records,
+            expansion=expansion,
+            reranked=reranked,
         )
 
     def search_bm25(
@@ -100,13 +154,15 @@ class KeywordSearchService:
         expansion_terms: int | None = None,
         alpha: float = 1.0,
         beta: float = 0.75,
+        use_reranker: bool = False,
     ) -> KeywordSearchServiceOutcome:
         """Run BM25 and hydrate its ranked chunks with citation metadata."""
 
+        retrieve_k = _RERANK_RETRIEVE_K if use_reranker else top_k
         if use_prf:
             prf = self.keyword_index.search_with_prf(
                 query,
-                top_k=top_k,
+                top_k=retrieve_k,
                 feedback_docs=feedback_docs,
                 max_expansion_terms=(
                     expansion_terms
@@ -116,25 +172,36 @@ class KeywordSearchService:
                 alpha=alpha,
                 beta=beta,
                 scoring_mode="bm25",
-                candidate_limit=max(top_k, candidate_limit),
+                candidate_limit=max(retrieve_k, candidate_limit),
                 k1=k1,
                 b=b,
             )
-            return KeywordSearchServiceOutcome(
-                records=self._hydrate(list(prf.hits)),
-                expansion=prf.expansion,
+            records = self._hydrate(list(prf.hits))
+            expansion = prf.expansion
+        else:
+            hits = self.keyword_index.search_bm25(
+                query,
+                top_k=retrieve_k,
+                candidate_limit=max(retrieve_k, candidate_limit),
+                k1=k1,
+                b=b,
             )
+            records = self._hydrate(hits)
+            expansion = None
 
-        hits = self.keyword_index.search_bm25(
-            query,
-            top_k=top_k,
-            candidate_limit=max(top_k, candidate_limit),
-            k1=k1,
-            b=b,
-        )
+        reranked = False
+        if use_reranker and records:
+            records = self._apply_rerank(
+                query,
+                records,
+                top_n=top_k,
+            )
+            reranked = True
+
         return KeywordSearchServiceOutcome(
-            records=self._hydrate(hits),
-            expansion=None,
+            records=records,
+            expansion=expansion,
+            reranked=reranked,
         )
 
     def _hydrate(
@@ -167,6 +234,8 @@ class KeywordSearchService:
                     section_title=chunk.section_title,
                     matched_terms=hit.matched_terms,
                     term_contributions=hit.term_contributions,
+                    retrieval_score=hit.score,
+                    rerank_score=None,
                 )
             )
         return results

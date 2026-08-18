@@ -47,6 +47,7 @@ def rag_search(
         outcome = service.generate(
             payload.query,
             top_k=payload.top_k,
+            use_reranker=payload.use_reranker,
         )
     except LLMError as error:
         raise HTTPException(
@@ -70,6 +71,8 @@ def rag_search(
                 page_number=chunk.page_number,
                 text=chunk.text,
                 score=chunk.score,
+                retrieval_score=chunk.retrieval_score,
+                rerank_score=chunk.rerank_score,
             )
             for chunk in outcome.cited_chunks
         ],

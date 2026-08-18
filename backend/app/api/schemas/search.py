@@ -17,6 +17,8 @@ class KeywordSearchResult(BaseModel):
     section_title: str | None
     matched_terms: tuple[str, ...]
     term_contributions: dict[str, float]
+    retrieval_score: float | None = None
+    rerank_score: float | None = None
 
 
 class PrfAddedTermResponse(BaseModel):
@@ -42,6 +44,7 @@ class KeywordSearchResponse(BaseModel):
     elapsed_ms: float
     results: list[KeywordSearchResult]
     expansion: PrfExpansionResponse | None = None
+    reranked: bool = False
 
 
 class BM25SearchResponse(BaseModel):
@@ -55,6 +58,7 @@ class BM25SearchResponse(BaseModel):
     elapsed_ms: float
     results: list[KeywordSearchResult]
     expansion: PrfExpansionResponse | None = None
+    reranked: bool = False
 
 
 class KeywordIndexStatsResponse(BaseModel):

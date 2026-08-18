@@ -49,6 +49,8 @@ def _result_payload(records: list) -> list[KeywordSearchResult]:
             section_title=record.section_title,
             matched_terms=record.matched_terms,
             term_contributions=record.term_contributions,
+            retrieval_score=record.retrieval_score,
+            rerank_score=record.rerank_score,
         )
         for record in records
     ]
@@ -68,6 +70,7 @@ def keyword_search(
     expansion_terms: Annotated[int | None, Query(ge=0, le=100)] = None,
     alpha: Annotated[float | None, Query()] = None,
     beta: Annotated[float | None, Query()] = None,
+    use_reranker: Annotated[bool | None, Query()] = None,
 ) -> KeywordSearchResponse:
     """Search indexed chunks using inexact top-K and TF-IDF cosine ranking."""
 
@@ -76,6 +79,11 @@ def keyword_search(
         max_expansion_terms
         if max_expansion_terms is not None
         else expansion_terms
+    )
+    rerank_enabled = (
+        settings.rerank_enabled_default
+        if use_reranker is None
+        else use_reranker
     )
     outcome = KeywordSearchService(session, keyword_index).search(
         query,
@@ -94,6 +102,7 @@ def keyword_search(
         ),
         alpha=settings.prf_alpha if alpha is None else alpha,
         beta=settings.prf_beta if beta is None else beta,
+        use_reranker=rerank_enabled,
     )
     elapsed_ms = (perf_counter() - started) * 1000
     results = _result_payload(outcome.records)
@@ -103,6 +112,7 @@ def keyword_search(
         elapsed_ms=elapsed_ms,
         results=results,
         expansion=_expansion_payload(outcome.expansion),
+        reranked=outcome.reranked,
     )
 
 
@@ -122,6 +132,7 @@ def bm25_search(
     expansion_terms: Annotated[int | None, Query(ge=0, le=100)] = None,
     alpha: Annotated[float | None, Query()] = None,
     beta: Annotated[float | None, Query()] = None,
+    use_reranker: Annotated[bool | None, Query()] = None,
 ) -> BM25SearchResponse:
     """Search indexed chunks using tunable Okapi BM25 ranking."""
 
@@ -130,6 +141,11 @@ def bm25_search(
         max_expansion_terms
         if max_expansion_terms is not None
         else expansion_terms
+    )
+    rerank_enabled = (
+        settings.rerank_enabled_default
+        if use_reranker is None
+        else use_reranker
     )
     outcome = KeywordSearchService(session, keyword_index).search_bm25(
         query,
@@ -150,6 +166,7 @@ def bm25_search(
         ),
         alpha=settings.prf_alpha if alpha is None else alpha,
         beta=settings.prf_beta if beta is None else beta,
+        use_reranker=rerank_enabled,
     )
     elapsed_ms = (perf_counter() - started) * 1000
     results = _result_payload(outcome.records)
@@ -161,6 +178,7 @@ def bm25_search(
         elapsed_ms=elapsed_ms,
         results=results,
         expansion=_expansion_payload(outcome.expansion),
+        reranked=outcome.reranked,
     )
 
 

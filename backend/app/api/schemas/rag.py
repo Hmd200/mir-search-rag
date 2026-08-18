@@ -8,6 +8,7 @@ class RagRequest(BaseModel):
 
     query: str = Field(min_length=1, max_length=500)
     top_k: int = Field(default=5, ge=1, le=50)
+    use_reranker: bool = False
 
 
 class RagCitedChunk(BaseModel):
@@ -19,6 +20,8 @@ class RagCitedChunk(BaseModel):
     page_number: int | None
     text: str
     score: float
+    retrieval_score: float
+    rerank_score: float | None = None
 
 
 class RagResponse(BaseModel):

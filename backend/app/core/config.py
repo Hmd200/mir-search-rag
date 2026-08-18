@@ -56,6 +56,8 @@ class Settings(BaseSettings):
     prf_expansion_terms: int = 10
     prf_alpha: float = 1.0
     prf_beta: float = 0.75
+    rerank_model_name: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+    rerank_enabled_default: bool = False
 
     max_upload_size_mb: int = 25
     chunk_size: int = 500
