@@ -105,8 +105,7 @@ def test_chunks_can_span_page_boundaries() -> None:
     chunks = DocumentChunker(chunk_size=5, chunk_overlap=2).split(document)
 
     assert all(
-        full_text[chunk.char_start : chunk.char_end] == chunk.text
-        for chunk in chunks
+        full_text[chunk.char_start : chunk.char_end] == chunk.text for chunk in chunks
     )
     same_page = [chunk for chunk in chunks if chunk.page_start == chunk.page_end]
     spanned = [chunk for chunk in chunks if chunk.page_start != chunk.page_end]

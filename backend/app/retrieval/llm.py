@@ -61,18 +61,12 @@ class OllamaClient:
             with httpx.Client(timeout=self._timeout) as client:
                 response = client.post(url, json=payload)
         except httpx.TimeoutException as error:
-            raise LLMError(
-                "The language model timed out."
-            ) from error
+            raise LLMError("The language model timed out.") from error
         except httpx.RequestError as error:
-            raise LLMError(
-                "The language model is unreachable."
-            ) from error
+            raise LLMError("The language model is unreachable.") from error
 
         if response.status_code != 200:
-            raise LLMError(
-                "The language model is unreachable."
-            )
+            raise LLMError("The language model is unreachable.")
 
         try:
             body = response.json()
@@ -82,15 +76,9 @@ class OllamaClient:
             ) from error
 
         message = body.get("message") if isinstance(body, dict) else None
-        content = (
-            message.get("content")
-            if isinstance(message, dict)
-            else None
-        )
+        content = message.get("content") if isinstance(message, dict) else None
         if not isinstance(content, str) or not content.strip():
-            raise LLMError(
-                "The language model returned an empty response."
-            )
+            raise LLMError("The language model returned an empty response.")
 
         return strip_think_blocks(content)
 
@@ -106,6 +94,4 @@ def create_llm_client(
     if provider == "ollama":
         return OllamaClient(settings, timeout=timeout)
 
-    raise LLMError(
-        f"Unsupported LLM provider: {settings.llm_provider}."
-    )
+    raise LLMError(f"Unsupported LLM provider: {settings.llm_provider}.")

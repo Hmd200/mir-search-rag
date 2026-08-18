@@ -60,9 +60,7 @@ def test_champion_top_three_matches_exact_on_twenty_chunks(
     assert [hit.chunk_id for hit in champion_hits] == [
         hit.chunk_id for hit in exact_hits
     ]
-    assert [hit.score for hit in champion_hits] == [
-        hit.score for hit in exact_hits
-    ]
+    assert [hit.score for hit in champion_hits] == [hit.score for hit in exact_hits]
     assert len(champion_hits) == 3
 
 
@@ -75,10 +73,7 @@ def test_fallback_matches_exact_search_for_a_rare_term(
     )
     index.upsert_document(
         "common",
-        [
-            (f"common-{i}", "signal ranking")
-            for i in range(10)
-        ],
+        [(f"common-{i}", "signal ranking") for i in range(10)],
     )
     index.upsert_document(
         "rare",
@@ -104,9 +99,7 @@ def test_fallback_matches_exact_search_for_a_rare_term(
     assert [hit.chunk_id for hit in champion_hits] == [
         hit.chunk_id for hit in exact_hits
     ]
-    assert [hit.score for hit in champion_hits] == [
-        hit.score for hit in exact_hits
-    ]
+    assert [hit.score for hit in champion_hits] == [hit.score for hit in exact_hits]
 
 
 def test_deleting_a_document_removes_chunks_from_champion_lists(

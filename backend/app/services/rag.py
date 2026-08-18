@@ -95,10 +95,7 @@ def _build_context(records: list[RagContextChunk]) -> str:
 
 
 def _build_user_prompt(query: str, context: str) -> str:
-    return (
-        f"Context:\n{context}\n\n"
-        f"Question: {query}"
-    )
+    return f"Context:\n{context}\n\nQuestion: {query}"
 
 
 def validate_citations(

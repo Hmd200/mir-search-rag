@@ -77,14 +77,10 @@ def keyword_search(
 
     started = perf_counter()
     resolved_expansion = (
-        max_expansion_terms
-        if max_expansion_terms is not None
-        else expansion_terms
+        max_expansion_terms if max_expansion_terms is not None else expansion_terms
     )
     rerank_enabled = (
-        settings.rerank_enabled_default
-        if use_reranker is None
-        else use_reranker
+        settings.rerank_enabled_default if use_reranker is None else use_reranker
     )
     outcome = KeywordSearchService(session, keyword_index).search(
         query,
@@ -92,9 +88,7 @@ def keyword_search(
         candidate_limit=candidate_limit,
         use_prf=use_prf,
         feedback_docs=(
-            feedback_docs
-            if feedback_docs is not None
-            else settings.prf_feedback_docs
+            feedback_docs if feedback_docs is not None else settings.prf_feedback_docs
         ),
         max_expansion_terms=(
             resolved_expansion
@@ -139,14 +133,10 @@ def bm25_search(
 
     started = perf_counter()
     resolved_expansion = (
-        max_expansion_terms
-        if max_expansion_terms is not None
-        else expansion_terms
+        max_expansion_terms if max_expansion_terms is not None else expansion_terms
     )
     rerank_enabled = (
-        settings.rerank_enabled_default
-        if use_reranker is None
-        else use_reranker
+        settings.rerank_enabled_default if use_reranker is None else use_reranker
     )
     outcome = KeywordSearchService(session, keyword_index).search_bm25(
         query,
@@ -156,9 +146,7 @@ def bm25_search(
         b=b,
         use_prf=use_prf,
         feedback_docs=(
-            feedback_docs
-            if feedback_docs is not None
-            else settings.prf_feedback_docs
+            feedback_docs if feedback_docs is not None else settings.prf_feedback_docs
         ),
         max_expansion_terms=(
             resolved_expansion

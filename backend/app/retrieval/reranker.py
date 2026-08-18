@@ -114,9 +114,7 @@ class CrossEncoderReranker:
             return [
                 RerankResult(
                     chunk=chunk,
-                    retrieval_score=float(
-                        getattr(chunk, "score", 0.0)
-                    ),
+                    retrieval_score=float(getattr(chunk, "score", 0.0)),
                     rerank_score=None,
                 )
                 for chunk in originals[:top_n]
@@ -128,16 +126,11 @@ class CrossEncoderReranker:
 
         # Cap before predict() so a large candidate list cannot explode cost.
         candidates = originals[:_MAX_RERANK_CANDIDATES]
-        pairs = [
-            [query, getattr(chunk, "text", "")]
-            for chunk in candidates
-        ]
+        pairs: list[Any] = [[query, getattr(chunk, "text", "")] for chunk in candidates]
         try:
             raw_scores = model.predict(pairs)
         except Exception as error:
-            logger.warning(
-                "Cross-encoder scoring failed; returning retrieval order."
-            )
+            logger.warning("Cross-encoder scoring failed; returning retrieval order.")
             logger.debug("Cross-encoder predict failed.", exc_info=error)
             return _passthrough()
 
@@ -147,9 +140,7 @@ class CrossEncoderReranker:
             scored.append(
                 RerankResult(
                     chunk=chunk,
-                    retrieval_score=float(
-                        getattr(chunk, "score", 0.0)
-                    ),
+                    retrieval_score=float(getattr(chunk, "score", 0.0)),
                     rerank_score=float(raw_score),
                 )
             )

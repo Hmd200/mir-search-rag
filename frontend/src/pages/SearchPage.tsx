@@ -399,6 +399,8 @@ function RagResults({
   );
 }
 
+// Search UI: dispatches TF-IDF, BM25, semantic, and RAG; exposes PRF,
+// BM25 k1/b, and the cross-encoder reranker as toggles/advanced controls.
 export function SearchPage() {
   const [query, setQuery] = useState("");
   const [algorithm, setAlgorithm] = useState<Algorithm>("tfidf");

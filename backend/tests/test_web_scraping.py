@@ -5,6 +5,7 @@ from __future__ import annotations
 import ipaddress
 import socket
 from collections.abc import Iterator
+from typing import Self
 
 import httpx
 import pytest
@@ -61,7 +62,7 @@ class _FakeStreamResponse:
         del chunk_size
         yield self._content
 
-    def __enter__(self) -> _FakeStreamResponse:
+    def __enter__(self) -> Self:
         return self
 
     def __exit__(self, *args: object) -> None:
@@ -72,7 +73,7 @@ class _FakeClient:
     def __init__(self, response: _FakeStreamResponse) -> None:
         self._response = response
 
-    def __enter__(self) -> _FakeClient:
+    def __enter__(self) -> Self:
         return self
 
     def __exit__(self, *args: object) -> None:
@@ -84,7 +85,7 @@ class _FakeClient:
 
 
 class _TimeoutClient:
-    def __enter__(self) -> _TimeoutClient:
+    def __enter__(self) -> Self:
         return self
 
     def __exit__(self, *args: object) -> None:

@@ -1,11 +1,11 @@
 """Local PDF and DOCX text extraction with citation metadata."""
 
+import ipaddress
+import socket
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
-import ipaddress
-import socket
 
 import httpx
 import pymupdf
@@ -27,8 +27,7 @@ _MAX_DOWNLOAD_BYTES = 5 * 1024 * 1024
 _MAX_REDIRECTS = 5
 _REQUEST_HEADERS = {
     "User-Agent": (
-        "Mozilla/5.0 (compatible; mir-search-rag/0.1; "
-        "+https://example.com/bot)"
+        "Mozilla/5.0 (compatible; mir-search-rag/0.1; +https://example.com/bot)"
     ),
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
 }
@@ -285,7 +284,7 @@ def _assert_public_http_url(url: str) -> None:
 
     for _family, _type, _proto, _canon, sockaddr in resolved:
         # sockaddr[0] is the resolved IP; hostnames never reach this check.
-        if _is_blocked_ip(sockaddr[0]):
+        if _is_blocked_ip(str(sockaddr[0])):
             raise ExtractionError("Internal network URLs are not allowed.")
 
 
@@ -343,9 +342,7 @@ def _download_html(url: str) -> tuple[str, str, int]:
     except ExtractionError:
         raise
     except httpx.TimeoutException as error:
-        raise ExtractionError(
-            "The URL timed out after 10 seconds."
-        ) from error
+        raise ExtractionError("The URL timed out after 10 seconds.") from error
     except httpx.RequestError as error:
         raise ExtractionError("The URL could not be reached.") from error
 

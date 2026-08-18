@@ -113,9 +113,7 @@ class KeywordIndex:
         champion_size: int = 50,
     ) -> None:
         if champion_size < 1:
-            raise ValueError(
-                "champion_size must be greater than zero."
-            )
+            raise ValueError("champion_size must be greater than zero.")
 
         self.path = Path(path)
         self.analyzer = analyzer or TextAnalyzer()
@@ -144,8 +142,7 @@ class KeywordIndex:
             documents = payload.get("documents", {})
 
             if not all(
-                isinstance(value, dict)
-                for value in (postings, chunks, documents)
+                isinstance(value, dict) for value in (postings, chunks, documents)
             ):
                 raise KeywordIndexError("Invalid keyword-index structure.")
 
@@ -231,9 +228,7 @@ class KeywordIndex:
 
         chunk_ids = [chunk_id for chunk_id, _ in chunk_values]
         if len(chunk_ids) != len(set(chunk_ids)):
-            raise KeywordIndexError(
-                "Chunk IDs must be unique within a document."
-            )
+            raise KeywordIndexError("Chunk IDs must be unique within a document.")
 
         with self._lock:
             postings = deepcopy(self._postings)
@@ -303,12 +298,7 @@ class KeywordIndex:
 
     @staticmethod
     def _idf(document_frequency: int, chunk_count: int) -> float:
-        return (
-            math.log(
-                (chunk_count + 1) / (document_frequency + 1)
-            )
-            + 1.0
-        )
+        return math.log((chunk_count + 1) / (document_frequency + 1)) + 1.0
 
     @staticmethod
     def _bm25_idf(
@@ -318,13 +308,7 @@ class KeywordIndex:
         """Return Robertson-Sparck Jones IDF with a positive lower bound."""
 
         return math.log(
-            1.0
-            + (
-                chunk_count
-                - document_frequency
-                + 0.5
-            )
-            / (document_frequency + 0.5)
+            1.0 + (chunk_count - document_frequency + 0.5) / (document_frequency + 0.5)
         )
 
     def _recompute_document_norms(self) -> None:
@@ -339,16 +323,12 @@ class KeywordIndex:
             )
 
             for term, raw_frequency in term_frequencies.items():
-                document_frequency = len(
-                    self._postings.get(term, {})
-                )
+                document_frequency = len(self._postings.get(term, {}))
                 idf = self._idf(
                     document_frequency,
                     chunk_count,
                 )
-                weight = (
-                    1.0 + math.log(raw_frequency)
-                ) * idf
+                weight = (1.0 + math.log(raw_frequency)) * idf
                 squared_sum += weight * weight
 
             norms[chunk_id] = math.sqrt(squared_sum)
@@ -390,13 +370,9 @@ class KeywordIndex:
         retrieval_mode: str,
     ) -> None:
         if top_k <= 0:
-            raise ValueError(
-                "top_k must be greater than zero."
-            )
+            raise ValueError("top_k must be greater than zero.")
         if retrieval_mode not in {"champion", "exact"}:
-            raise ValueError(
-                "retrieval_mode must be 'champion' or 'exact'."
-            )
+            raise ValueError("retrieval_mode must be 'champion' or 'exact'.")
 
     def _champion_strength(
         self,
@@ -427,9 +403,7 @@ class KeywordIndex:
                 document_frequency,
                 chunk_count,
             )
-            document_weight = (
-                1.0 + math.log(term_frequency)
-            ) * idf
+            document_weight = (1.0 + math.log(term_frequency)) * idf
             return document_weight / document_norm
 
         if average_length <= 0:
@@ -444,23 +418,12 @@ class KeywordIndex:
                 )
             ),
         )
-        length_factor = k1 * (
-            1.0
-            - b
-            + b
-            * document_length
-            / average_length
-        )
+        length_factor = k1 * (1.0 - b + b * document_length / average_length)
         idf = self._bm25_idf(
             document_frequency,
             chunk_count,
         )
-        return (
-            idf
-            * term_frequency
-            * (k1 + 1.0)
-            / (term_frequency + length_factor)
-        )
+        return idf * term_frequency * (k1 + 1.0) / (term_frequency + length_factor)
 
     def _get_champion_lists(
         self,
@@ -498,15 +461,8 @@ class KeywordIndex:
     ) -> _CandidateSelection:
         """Select documents before full TF-IDF or BM25 scoring."""
 
-        matched_terms = tuple(
-            term
-            for term in query_terms
-            if term in self._postings
-        )
-        total_postings = sum(
-            len(self._postings[term])
-            for term in matched_terms
-        )
+        matched_terms = tuple(term for term in query_terms if term in self._postings)
+        total_postings = sum(len(self._postings[term]) for term in matched_terms)
 
         if not matched_terms:
             return _CandidateSelection(
@@ -518,13 +474,11 @@ class KeywordIndex:
             )
 
         if retrieval_mode == "exact":
-            candidate_ids = {
-                chunk_id
-                for term in matched_terms
-                for chunk_id in self._postings[term]
+            exact_candidate_ids = {
+                chunk_id for term in matched_terms for chunk_id in self._postings[term]
             }
             return _CandidateSelection(
-                chunk_ids=frozenset(candidate_ids),
+                chunk_ids=frozenset(exact_candidate_ids),
                 total_postings=total_postings,
                 postings_visited=total_postings,
                 fallback_occurred=False,
@@ -537,29 +491,26 @@ class KeywordIndex:
             b=b,
         )
 
-        candidate_ids: set[str] = set()
+        champion_candidate_ids: set[str] = set()
         postings_visited = 0
 
         for term in matched_terms:
             champions = champion_lists.get(term, ())
             postings_visited += len(champions)
-            candidate_ids.update(champions)
+            champion_candidate_ids.update(champions)
 
-        fallback_occurred = (
-            fallback
-            and len(candidate_ids) < top_k
-        )
+        fallback_occurred = fallback and len(champion_candidate_ids) < top_k
 
         if fallback_occurred:
-            candidate_ids = set()
+            champion_candidate_ids = set()
             postings_visited = 0
             for term in matched_terms:
                 postings = self._postings[term]
                 postings_visited += len(postings)
-                candidate_ids.update(postings)
+                champion_candidate_ids.update(postings)
 
         return _CandidateSelection(
-            chunk_ids=frozenset(candidate_ids),
+            chunk_ids=frozenset(champion_candidate_ids),
             total_postings=total_postings,
             postings_visited=min(
                 postings_visited,
@@ -589,9 +540,7 @@ class KeywordIndex:
                 len(postings),
                 chunk_count,
             )
-            query_weights[term] = (
-                1.0 + math.log(query_frequency)
-            ) * idf
+            query_weights[term] = (1.0 + math.log(query_frequency)) * idf
 
         return query_weights
 
@@ -614,22 +563,15 @@ class KeywordIndex:
             for term, raw_frequency in term_frequencies.items():
                 if raw_frequency <= 0:
                     continue
-                document_frequency = len(
-                    self._postings.get(term, {})
-                )
+                document_frequency = len(self._postings.get(term, {}))
                 idf = self._idf(
                     document_frequency,
                     chunk_count,
                 )
-                sums[term] += (
-                    1.0 + math.log(raw_frequency)
-                ) * idf
+                sums[term] += (1.0 + math.log(raw_frequency)) * idf
 
         scale = 1.0 / len(relevant)
-        return {
-            term: value * scale
-            for term, value in sums.items()
-        }
+        return {term: value * scale for term, value in sums.items()}
 
     def _expand_query_vector(
         self,
@@ -646,9 +588,8 @@ class KeywordIndex:
         combined: dict[str, float] = {}
         for term in set(query_vector) | set(centroid):
             # q_new = alpha * q_old + beta * centroid; gamma is unused.
-            weight = (
-                alpha * query_vector.get(term, 0.0)
-                + beta * centroid.get(term, 0.0)
+            weight = alpha * query_vector.get(term, 0.0) + beta * centroid.get(
+                term, 0.0
             )
             if weight != 0.0:
                 combined[term] = weight
@@ -658,18 +599,10 @@ class KeywordIndex:
             for term, weight in combined.items()
             if term not in original_terms and weight > 0.0
         ]
-        added_candidates.sort(
-            key=lambda item: (-item.weight, item.term)
-        )
+        added_candidates.sort(key=lambda item: (-item.weight, item.term))
         added = tuple(added_candidates[:max_expansion_terms])
-        kept_terms = original_terms | {
-            item.term for item in added
-        }
-        expanded = {
-            term: combined[term]
-            for term in kept_terms
-            if term in combined
-        }
+        kept_terms = original_terms | {item.term for item in added}
+        expanded = {term: combined[term] for term in kept_terms if term in combined}
         return expanded, added
 
     def _score_tfidf_from_weights(
@@ -690,20 +623,14 @@ class KeywordIndex:
 
         chunk_count = len(self._chunks)
         query_norm = math.sqrt(
-            sum(
-                weight * weight
-                for weight in active_weights.values()
-            )
+            sum(weight * weight for weight in active_weights.values())
         )
         hits: list[KeywordSearchHit] = []
 
         for chunk_id in candidate_ids:
-            denominator = (
-                query_norm
-                * self._document_norms.get(
-                    chunk_id,
-                    0.0,
-                )
+            denominator = query_norm * self._document_norms.get(
+                chunk_id,
+                0.0,
             )
             if denominator <= 0:
                 continue
@@ -711,9 +638,7 @@ class KeywordIndex:
             contributions: dict[str, float] = {}
 
             for term, query_weight in active_weights.items():
-                positions = self._postings[term].get(
-                    chunk_id
-                )
+                positions = self._postings[term].get(chunk_id)
                 if not positions:
                     continue
 
@@ -721,25 +646,15 @@ class KeywordIndex:
                     len(self._postings[term]),
                     chunk_count,
                 )
-                document_weight = (
-                    1.0 + math.log(len(positions))
-                ) * idf
-                contributions[term] = (
-                    query_weight
-                    * document_weight
-                    / denominator
-                )
+                document_weight = (1.0 + math.log(len(positions))) * idf
+                contributions[term] = query_weight * document_weight / denominator
 
             if contributions:
                 hits.append(
                     KeywordSearchHit(
                         chunk_id=chunk_id,
-                        score=sum(
-                            contributions.values()
-                        ),
-                        matched_terms=tuple(
-                            sorted(contributions)
-                        ),
+                        score=sum(contributions.values()),
+                        matched_terms=tuple(sorted(contributions)),
                         term_contributions=contributions,
                     )
                 )
@@ -809,13 +724,7 @@ class KeywordIndex:
                     continue
 
                 term_frequency = len(positions)
-                length_factor = k1 * (
-                    1.0
-                    - b
-                    + b
-                    * document_length
-                    / average_length
-                )
+                length_factor = k1 * (1.0 - b + b * document_length / average_length)
                 idf = self._bm25_idf(
                     len(postings),
                     chunk_count,
@@ -825,22 +734,15 @@ class KeywordIndex:
                     * idf
                     * term_frequency
                     * (k1 + 1.0)
-                    / (
-                        term_frequency
-                        + length_factor
-                    )
+                    / (term_frequency + length_factor)
                 )
 
             if contributions:
                 hits.append(
                     KeywordSearchHit(
                         chunk_id=chunk_id,
-                        score=sum(
-                            contributions.values()
-                        ),
-                        matched_terms=tuple(
-                            sorted(contributions)
-                        ),
+                        score=sum(contributions.values()),
+                        matched_terms=tuple(sorted(contributions)),
                         term_contributions=contributions,
                     )
                 )
@@ -859,22 +761,14 @@ class KeywordIndex:
         exact_hits: Iterable[KeywordSearchHit],
         top_k: int,
     ) -> float:
-        approximate_ids = {
-            hit.chunk_id
-            for hit in approximate_hits
-        }
-        exact_ids = {
-            hit.chunk_id
-            for hit in exact_hits
-        }
+        approximate_ids = {hit.chunk_id for hit in approximate_hits}
+        exact_ids = {hit.chunk_id for hit in exact_hits}
         denominator = min(top_k, len(exact_ids))
 
         if denominator == 0:
             return 1.0
 
-        return len(
-            approximate_ids & exact_ids
-        ) / denominator
+        return len(approximate_ids & exact_ids) / denominator
 
     @staticmethod
     def _build_diagnostics(
@@ -888,10 +782,7 @@ class KeywordIndex:
         if selection.total_postings:
             reduction_percentage = (
                 100.0
-                * (
-                    selection.total_postings
-                    - selection.postings_visited
-                )
+                * (selection.total_postings - selection.postings_visited)
                 / selection.total_postings
             )
         else:
@@ -899,29 +790,13 @@ class KeywordIndex:
 
         return KeywordSearchDiagnostics(
             retrieval_mode=retrieval_mode,
-            champion_size=(
-                champion_size
-                if retrieval_mode == "champion"
-                else None
-            ),
-            total_postings_available=(
-                selection.total_postings
-            ),
-            postings_visited=(
-                selection.postings_visited
-            ),
-            candidate_count=len(
-                selection.chunk_ids
-            ),
-            reduction_percentage=(
-                reduction_percentage
-            ),
-            fallback_occurred=(
-                selection.fallback_occurred
-            ),
-            champion_rebuilt=(
-                selection.champion_rebuilt
-            ),
+            champion_size=(champion_size if retrieval_mode == "champion" else None),
+            total_postings_available=(selection.total_postings),
+            postings_visited=(selection.postings_visited),
+            candidate_count=len(selection.chunk_ids),
+            reduction_percentage=(reduction_percentage),
+            fallback_occurred=(selection.fallback_occurred),
+            champion_rebuilt=(selection.champion_rebuilt),
             exact_top_k_overlap=overlap,
             search_latency_ms=latency_ms,
         )
@@ -942,17 +817,13 @@ class KeywordIndex:
         if not use_champions:
             retrieval_mode = "exact"
         if champion_size is not None and champion_size < 1:
-            raise ValueError(
-                "champion_size must be greater than zero."
-            )
+            raise ValueError("champion_size must be greater than zero.")
 
         self._validate_search_options(
             top_k=top_k,
             retrieval_mode=retrieval_mode,
         )
-        query_frequencies = Counter(
-            self.analyzer.analyze(query)
-        )
+        query_frequencies = Counter(self.analyzer.analyze(query))
         started = perf_counter()
 
         with self._lock:
@@ -971,9 +842,7 @@ class KeywordIndex:
                 selection.chunk_ids,
                 top_k,
             )
-            latency_ms = (
-                perf_counter() - started
-            ) * 1000
+            latency_ms = (perf_counter() - started) * 1000
 
             overlap: float | None = None
             if compare_exact:
@@ -1031,9 +900,7 @@ class KeywordIndex:
         """
 
         if candidate_limit is not None and candidate_limit < 1:
-            raise ValueError(
-                "champion_size must be greater than zero."
-            )
+            raise ValueError("champion_size must be greater than zero.")
 
         outcome = self.search_detailed(
             query,
@@ -1063,26 +930,18 @@ class KeywordIndex:
         if not use_champions:
             retrieval_mode = "exact"
         if champion_size is not None and champion_size < 1:
-            raise ValueError(
-                "champion_size must be greater than zero."
-            )
+            raise ValueError("champion_size must be greater than zero.")
 
         self._validate_search_options(
             top_k=top_k,
             retrieval_mode=retrieval_mode,
         )
         if k1 <= 0:
-            raise ValueError(
-                "k1 must be greater than zero."
-            )
+            raise ValueError("k1 must be greater than zero.")
         if not 0.0 <= b <= 1.0:
-            raise ValueError(
-                "b must be between zero and one."
-            )
+            raise ValueError("b must be between zero and one.")
 
-        query_frequencies = Counter(
-            self.analyzer.analyze(query)
-        )
+        query_frequencies = Counter(self.analyzer.analyze(query))
         started = perf_counter()
 
         with self._lock:
@@ -1103,9 +962,7 @@ class KeywordIndex:
                 k1=k1,
                 b=b,
             )
-            latency_ms = (
-                perf_counter() - started
-            ) * 1000
+            latency_ms = (perf_counter() - started) * 1000
 
             overlap: float | None = None
             if compare_exact:
@@ -1167,9 +1024,7 @@ class KeywordIndex:
         """
 
         if candidate_limit is not None and candidate_limit < 1:
-            raise ValueError(
-                "champion_size must be greater than zero."
-            )
+            raise ValueError("champion_size must be greater than zero.")
 
         outcome = self.search_bm25_detailed(
             query,
@@ -1193,25 +1048,17 @@ class KeywordIndex:
         scoring_mode: str,
     ) -> None:
         if feedback_docs < 1:
-            raise ValueError(
-                "feedback_docs must be greater than zero."
-            )
+            raise ValueError("feedback_docs must be greater than zero.")
         if max_expansion_terms < 0:
             raise ValueError(
                 "max_expansion_terms must be greater than or equal to zero."
             )
         if alpha < 0:
-            raise ValueError(
-                "alpha must be greater than or equal to zero."
-            )
+            raise ValueError("alpha must be greater than or equal to zero.")
         if beta < 0:
-            raise ValueError(
-                "beta must be greater than or equal to zero."
-            )
+            raise ValueError("beta must be greater than or equal to zero.")
         if scoring_mode not in {"tfidf", "bm25"}:
-            raise ValueError(
-                "scoring_mode must be 'tfidf' or 'bm25'."
-            )
+            raise ValueError("scoring_mode must be 'tfidf' or 'bm25'.")
 
     def _search_weighted(
         self,
@@ -1307,11 +1154,7 @@ class KeywordIndex:
         )
         self._validate_search_options(
             top_k=top_k,
-            retrieval_mode=(
-                "exact"
-                if not use_champions
-                else retrieval_mode
-            ),
+            retrieval_mode=("exact" if not use_champions else retrieval_mode),
         )
 
         empty = KeywordPrfSearchOutcome(
@@ -1321,43 +1164,39 @@ class KeywordIndex:
                 feedback_chunk_ids=(),
             ),
         )
-        search_options = {
-            "top_k": feedback_docs,
-            "use_champions": use_champions,
-            "champion_size": champion_size,
-            "retrieval_mode": retrieval_mode,
-            "fallback": fallback,
-            "candidate_limit": candidate_limit,
-        }
-
         if scoring_mode == "tfidf":
-            first_hits = self.search(query, **search_options)
+            first_hits = self.search(
+                query,
+                top_k=feedback_docs,
+                use_champions=use_champions,
+                champion_size=champion_size,
+                retrieval_mode=retrieval_mode,
+                fallback=fallback,
+                candidate_limit=candidate_limit,
+            )
         else:
             first_hits = self.search_bm25(
                 query,
+                top_k=feedback_docs,
+                use_champions=use_champions,
+                champion_size=champion_size,
+                retrieval_mode=retrieval_mode,
+                fallback=fallback,
+                candidate_limit=candidate_limit,
                 k1=k1,
                 b=b,
-                **search_options,
             )
 
         if not first_hits:
             return empty
 
-        feedback_chunk_ids = tuple(
-            hit.chunk_id for hit in first_hits
-        )
-        query_frequencies = Counter(
-            self.analyzer.analyze(query)
-        )
+        feedback_chunk_ids = tuple(hit.chunk_id for hit in first_hits)
+        query_frequencies = Counter(self.analyzer.analyze(query))
         original_terms = set(query_frequencies)
 
         with self._lock:
-            query_vector = self._tfidf_query_weights(
-                query_frequencies
-            )
-            centroid = self._feedback_centroid(
-                feedback_chunk_ids
-            )
+            query_vector = self._tfidf_query_weights(query_frequencies)
+            centroid = self._feedback_centroid(feedback_chunk_ids)
             expanded, added = self._expand_query_vector(
                 query_vector,
                 centroid,
@@ -1380,11 +1219,7 @@ class KeywordIndex:
             expanded,
             top_k=top_k,
             scoring_mode=scoring_mode,
-            retrieval_mode=(
-                "exact"
-                if not use_champions
-                else retrieval_mode
-            ),
+            retrieval_mode=("exact" if not use_champions else retrieval_mode),
             fallback=fallback,
             k1=k1,
             b=b,
@@ -1412,9 +1247,7 @@ class KeywordIndex:
                 chunk_count=len(self._chunks),
                 vocabulary_size=len(self._postings),
                 posting_count=sum(
-                    len(term_postings)
-                    for term_postings
-                    in self._postings.values()
+                    len(term_postings) for term_postings in self._postings.values()
                 ),
             )
 

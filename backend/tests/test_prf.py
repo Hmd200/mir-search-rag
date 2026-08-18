@@ -37,9 +37,7 @@ def test_prf_adds_terms_that_cooccur_in_feedback_chunks(
     query = "neural"
     query_terms = set(index.analyzer.analyze(query))
     feedback_terms = set(
-        index.analyzer.analyze(
-            "neural neural neural ranking quokka quokka quokka"
-        )
+        index.analyzer.analyze("neural neural neural ranking quokka quokka quokka")
     )
 
     outcome = index.search_with_prf(
@@ -59,10 +57,7 @@ def test_prf_surfaces_vocabulary_mismatch_document(
     tmp_path: Path,
 ) -> None:
     index = _mismatch_corpus(tmp_path)
-    baseline = [
-        hit.chunk_id
-        for hit in index.search("neural", top_k=10)
-    ]
+    baseline = [hit.chunk_id for hit in index.search("neural", top_k=10)]
     outcome = index.search_with_prf(
         "neural",
         top_k=10,
@@ -105,12 +100,8 @@ def test_beta_zero_matches_non_prf_search(tmp_path: Path) -> None:
         beta=0.0,
     )
 
-    assert [hit.chunk_id for hit in outcome.hits] == [
-        hit.chunk_id for hit in baseline
-    ]
-    assert [hit.score for hit in outcome.hits] == [
-        hit.score for hit in baseline
-    ]
+    assert [hit.chunk_id for hit in outcome.hits] == [hit.chunk_id for hit in baseline]
+    assert [hit.score for hit in outcome.hits] == [hit.score for hit in baseline]
     assert outcome.expansion.added_terms == ()
 
 

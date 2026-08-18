@@ -64,9 +64,7 @@ class DocumentChunker:
             char_start = first_match.start()
             char_end = last_match.end()
             text = document.text[char_start:char_end]
-            covering = _covering_segments(
-                document.segments, char_start, char_end
-            )
+            covering = _covering_segments(document.segments, char_start, char_end)
             first_segment = covering[0] if covering else None
             last_segment = covering[-1] if covering else None
             metadata = dict(first_segment.metadata) if first_segment else {}
@@ -78,12 +76,8 @@ class DocumentChunker:
                     token_count=end_word - start_word,
                     char_start=char_start,
                     char_end=char_end,
-                    page_start=(
-                        first_segment.page_number if first_segment else None
-                    ),
-                    page_end=(
-                        last_segment.page_number if last_segment else None
-                    ),
+                    page_start=(first_segment.page_number if first_segment else None),
+                    page_end=(last_segment.page_number if last_segment else None),
                     section_title=(
                         first_segment.section_title if first_segment else None
                     ),
