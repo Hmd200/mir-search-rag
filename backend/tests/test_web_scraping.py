@@ -9,6 +9,7 @@ from collections.abc import Iterator
 import httpx
 import pytest
 
+from app.processing.extractors import ExtractionError, extract_from_url
 from tests.test_documents_api import DocumentApiContext
 
 pytest_plugins = ["tests.test_documents_api"]
@@ -294,3 +295,27 @@ def test_oversized_content_is_rejected(
 
     assert response.status_code == 400
     assert "5 mb" in response.json()["detail"].lower()
+
+
+def test_forbidden_response_is_400_with_status_code(
+    document_api: DocumentApiContext,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_public_dns(monkeypatch)
+    monkeypatch.setattr(
+        "app.processing.extractors.httpx.Client",
+        lambda **kwargs: _FakeClient(
+            _FakeStreamResponse(b"forbidden", status_code=403),
+        ),
+    )
+
+    with pytest.raises(ExtractionError, match="403") as raised:
+        extract_from_url(_PAGE_URL)
+    assert "403" in str(raised.value)
+
+    response = document_api.client.post(
+        "/api/v1/documents/from-url",
+        json={"url": _PAGE_URL},
+    )
+    assert response.status_code == 400
+    assert "403" in response.json()["detail"]

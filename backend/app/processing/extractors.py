@@ -25,6 +25,13 @@ from app.processing.schemas import (
 _FETCH_TIMEOUT_SECONDS = 10.0
 _MAX_DOWNLOAD_BYTES = 5 * 1024 * 1024
 _MAX_REDIRECTS = 5
+_REQUEST_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (compatible; mir-search-rag/0.1; "
+        "+https://example.com/bot)"
+    ),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+}
 
 
 class ExtractionError(DocumentProcessingError):
@@ -290,7 +297,6 @@ def _download_html(url: str) -> tuple[str, str, int]:
     """Fetch HTML with a 10s timeout, 5MB cap, and redirect SSRF checks."""
 
     current_url = url
-    headers = {"User-Agent": "mir-search-rag/0.1"}
     _assert_public_http_url(current_url)
 
     try:
@@ -300,7 +306,11 @@ def _download_html(url: str) -> tuple[str, str, int]:
         ) as client:
             for _ in range(_MAX_REDIRECTS + 1):
                 _assert_public_http_url(current_url)
-                with client.stream("GET", current_url, headers=headers) as response:
+                with client.stream(
+                    "GET",
+                    current_url,
+                    headers=_REQUEST_HEADERS,
+                ) as response:
                     if response.is_redirect:
                         location = response.headers.get("location")
                         if not location:
@@ -311,7 +321,10 @@ def _download_html(url: str) -> tuple[str, str, int]:
                         continue
 
                     if response.status_code >= 400:
-                        raise ExtractionError("The URL could not be reached.")
+                        raise ExtractionError(
+                            "The server returned an error "
+                            f"(status {response.status_code})."
+                        )
 
                     chunks: list[bytes] = []
                     total = 0
