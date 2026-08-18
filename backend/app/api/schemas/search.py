@@ -19,6 +19,20 @@ class KeywordSearchResult(BaseModel):
     term_contributions: dict[str, float]
 
 
+class PrfAddedTermResponse(BaseModel):
+    """One term introduced by Rocchio query expansion."""
+
+    term: str
+    weight: float
+
+
+class PrfExpansionResponse(BaseModel):
+    """PRF expansion metadata shown alongside ranked results."""
+
+    added_terms: list[PrfAddedTermResponse]
+    feedback_chunk_ids: list[str]
+
+
 class KeywordSearchResponse(BaseModel):
     """Ranked response from the custom vector-space retrieval engine."""
 
@@ -27,6 +41,7 @@ class KeywordSearchResponse(BaseModel):
     result_count: int
     elapsed_ms: float
     results: list[KeywordSearchResult]
+    expansion: PrfExpansionResponse | None = None
 
 
 class BM25SearchResponse(BaseModel):
@@ -39,6 +54,7 @@ class BM25SearchResponse(BaseModel):
     result_count: int
     elapsed_ms: float
     results: list[KeywordSearchResult]
+    expansion: PrfExpansionResponse | None = None
 
 
 class KeywordIndexStatsResponse(BaseModel):

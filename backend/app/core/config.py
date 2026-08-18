@@ -51,6 +51,12 @@ class Settings(BaseSettings):
     ollama_model: str = "qwen3:8b"
     llm_provider: str = "ollama"
 
+    prf_feedback_docs: int = 5
+    prf_max_expansion_terms: int = 10
+    prf_expansion_terms: int = 10
+    prf_alpha: float = 1.0
+    prf_beta: float = 0.75
+
     max_upload_size_mb: int = 25
     chunk_size: int = 500
     chunk_overlap: int = 75

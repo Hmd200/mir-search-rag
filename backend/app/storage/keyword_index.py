@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import math
 from collections import Counter, defaultdict
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from copy import deepcopy
 from dataclasses import dataclass
 from functools import lru_cache
@@ -67,6 +67,30 @@ class KeywordSearchOutcome:
 
     hits: tuple[KeywordSearchHit, ...]
     diagnostics: KeywordSearchDiagnostics
+
+
+@dataclass(frozen=True, slots=True)
+class PrfAddedTerm:
+    """A term introduced by Rocchio query expansion."""
+
+    term: str
+    weight: float
+
+
+@dataclass(frozen=True, slots=True)
+class PrfExpansion:
+    """Terms and feedback documents produced by pseudo-relevance feedback."""
+
+    added_terms: tuple[PrfAddedTerm, ...]
+    feedback_chunk_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class KeywordPrfSearchOutcome:
+    """PRF retrieval results plus the expansion applied to the query."""
+
+    hits: tuple[KeywordSearchHit, ...]
+    expansion: PrfExpansion
 
 
 @dataclass(frozen=True, slots=True)
@@ -545,18 +569,18 @@ class KeywordIndex:
             champion_rebuilt=rebuilt,
         )
 
-    def _score_tfidf_candidates(
+    def _tfidf_query_weights(
         self,
-        query_frequencies: Counter[str],
-        candidate_ids: Iterable[str],
-        top_k: int,
-    ) -> list[KeywordSearchHit]:
-        """Calculate full cosine scores only for selected candidates."""
+        query_frequencies: Mapping[str, float],
+    ) -> dict[str, float]:
+        """Return TF-IDF query weights from raw term frequencies."""
 
         chunk_count = len(self._chunks)
         query_weights: dict[str, float] = {}
 
         for term, query_frequency in query_frequencies.items():
+            if query_frequency <= 0:
+                continue
             postings = self._postings.get(term)
             if not postings:
                 continue
@@ -569,13 +593,106 @@ class KeywordIndex:
                 1.0 + math.log(query_frequency)
             ) * idf
 
-        if not query_weights:
+        return query_weights
+
+    def _feedback_centroid(
+        self,
+        chunk_ids: Iterable[str],
+    ) -> dict[str, float]:
+        """Average TF-IDF vectors of D_rel from the forward index."""
+
+        relevant = list(chunk_ids)
+        if not relevant:
+            return {}
+
+        chunk_count = len(self._chunks)
+        sums: dict[str, float] = defaultdict(float)
+
+        for chunk_id in relevant:
+            # Terms come from the stored forward index, not a postings scan.
+            term_frequencies = self._chunks[chunk_id]["term_frequencies"]
+            for term, raw_frequency in term_frequencies.items():
+                if raw_frequency <= 0:
+                    continue
+                document_frequency = len(
+                    self._postings.get(term, {})
+                )
+                idf = self._idf(
+                    document_frequency,
+                    chunk_count,
+                )
+                sums[term] += (
+                    1.0 + math.log(raw_frequency)
+                ) * idf
+
+        scale = 1.0 / len(relevant)
+        return {
+            term: value * scale
+            for term, value in sums.items()
+        }
+
+    def _expand_query_vector(
+        self,
+        query_vector: Mapping[str, float],
+        centroid: Mapping[str, float],
+        *,
+        alpha: float,
+        beta: float,
+        max_expansion_terms: int,
+        original_terms: set[str],
+    ) -> tuple[dict[str, float], tuple[PrfAddedTerm, ...]]:
+        """Apply Rocchio and keep original terms plus top new terms."""
+
+        combined: dict[str, float] = {}
+        for term in set(query_vector) | set(centroid):
+            # q_new = alpha * q_old + beta * centroid; gamma is unused.
+            weight = (
+                alpha * query_vector.get(term, 0.0)
+                + beta * centroid.get(term, 0.0)
+            )
+            if weight != 0.0:
+                combined[term] = weight
+
+        added_candidates = [
+            PrfAddedTerm(term=term, weight=weight)
+            for term, weight in combined.items()
+            if term not in original_terms and weight > 0.0
+        ]
+        added_candidates.sort(
+            key=lambda item: (-item.weight, item.term)
+        )
+        added = tuple(added_candidates[:max_expansion_terms])
+        kept_terms = original_terms | {
+            item.term for item in added
+        }
+        expanded = {
+            term: combined[term]
+            for term in kept_terms
+            if term in combined
+        }
+        return expanded, added
+
+    def _score_tfidf_from_weights(
+        self,
+        query_weights: Mapping[str, float],
+        candidate_ids: Iterable[str],
+        top_k: int,
+    ) -> list[KeywordSearchHit]:
+        """Calculate cosine scores from a precomputed query vector."""
+
+        active_weights = {
+            term: weight
+            for term, weight in query_weights.items()
+            if weight != 0.0 and term in self._postings
+        }
+        if not active_weights:
             return []
 
+        chunk_count = len(self._chunks)
         query_norm = math.sqrt(
             sum(
                 weight * weight
-                for weight in query_weights.values()
+                for weight in active_weights.values()
             )
         )
         hits: list[KeywordSearchHit] = []
@@ -593,7 +710,7 @@ class KeywordIndex:
 
             contributions: dict[str, float] = {}
 
-            for term, query_weight in query_weights.items():
+            for term, query_weight in active_weights.items():
                 positions = self._postings[term].get(
                     chunk_id
                 )
@@ -635,9 +752,23 @@ class KeywordIndex:
         )
         return hits[:top_k]
 
-    def _score_bm25_candidates(
+    def _score_tfidf_candidates(
         self,
         query_frequencies: Counter[str],
+        candidate_ids: Iterable[str],
+        top_k: int,
+    ) -> list[KeywordSearchHit]:
+        """Calculate full cosine scores only for selected candidates."""
+
+        return self._score_tfidf_from_weights(
+            self._tfidf_query_weights(query_frequencies),
+            candidate_ids,
+            top_k,
+        )
+
+    def _score_bm25_candidates(
+        self,
+        query_frequencies: Mapping[str, float],
         candidate_ids: Iterable[str],
         top_k: int,
         *,
@@ -667,6 +798,8 @@ class KeywordIndex:
             contributions: dict[str, float] = {}
 
             for term, query_frequency in query_frequencies.items():
+                if query_frequency <= 0:
+                    continue
                 postings = self._postings.get(term)
                 if not postings:
                     continue
@@ -1049,6 +1182,220 @@ class KeywordIndex:
             b=b,
         )
         return list(outcome.hits)
+
+    @staticmethod
+    def _validate_prf_options(
+        *,
+        feedback_docs: int,
+        max_expansion_terms: int,
+        alpha: float,
+        beta: float,
+        scoring_mode: str,
+    ) -> None:
+        if feedback_docs < 1:
+            raise ValueError(
+                "feedback_docs must be greater than zero."
+            )
+        if max_expansion_terms < 0:
+            raise ValueError(
+                "max_expansion_terms must be greater than or equal to zero."
+            )
+        if alpha < 0:
+            raise ValueError(
+                "alpha must be greater than or equal to zero."
+            )
+        if beta < 0:
+            raise ValueError(
+                "beta must be greater than or equal to zero."
+            )
+        if scoring_mode not in {"tfidf", "bm25"}:
+            raise ValueError(
+                "scoring_mode must be 'tfidf' or 'bm25'."
+            )
+
+    def _search_weighted(
+        self,
+        query_weights: Mapping[str, float],
+        *,
+        top_k: int,
+        scoring_mode: ScoringMode,
+        retrieval_mode: RetrievalMode,
+        fallback: bool,
+        k1: float,
+        b: float,
+    ) -> list[KeywordSearchHit]:
+        """Run a second-pass search from a Rocchio-weighted query."""
+
+        terms = [
+            term
+            for term, weight in query_weights.items()
+            if weight > 0 and term in self._postings
+        ]
+        with self._lock:
+            selection = self._select_candidates(
+                terms,
+                scoring=scoring_mode,
+                retrieval_mode=retrieval_mode,
+                top_k=top_k,
+                fallback=fallback,
+                k1=k1,
+                b=b,
+            )
+            self._postings_visited = selection.postings_visited
+            if scoring_mode == "tfidf":
+                return self._score_tfidf_from_weights(
+                    query_weights,
+                    selection.chunk_ids,
+                    top_k,
+                )
+            return self._score_bm25_candidates(
+                query_weights,
+                selection.chunk_ids,
+                top_k,
+                k1=k1,
+                b=b,
+            )
+
+    def search_with_prf(
+        self,
+        query: str,
+        *,
+        top_k: int = 10,
+        feedback_docs: int = 5,
+        max_expansion_terms: int = 10,
+        expansion_terms: int | None = None,
+        alpha: float = 1.0,
+        beta: float = 0.75,
+        scoring_mode: ScoringMode = "tfidf",
+        use_champions: bool = True,
+        champion_size: int | None = None,
+        retrieval_mode: RetrievalMode = "champion",
+        fallback: bool = True,
+        candidate_limit: int | None = None,
+        k1: float = 1.5,
+        b: float = 0.75,
+    ) -> KeywordPrfSearchOutcome:
+        """Expand a TF-IDF query with Rocchio pseudo-relevance feedback.
+
+        Formula: q_new = alpha * q_old + beta * centroid(D_rel).
+        D_rel is the top `feedback_docs` chunks from an initial TF-IDF
+        search. There is no non-relevant set, so gamma is 0 and no
+        subtraction term is computed. Original query terms are kept and
+        at most `max_expansion_terms` new centroid terms are added.
+        The expanded weight map is scored with the same cosine TF-IDF
+        path as a normal search.
+
+        expansion_terms remains accepted as an alias of
+        max_expansion_terms.
+        """
+
+        if expansion_terms is not None:
+            max_expansion_terms = expansion_terms
+
+        # alpha=1.0 keeps the original query at full strength.
+        # beta=0.75 is the standard Rocchio relevant-set weight.
+        # gamma=0 because PRF has no non-relevant documents to subtract.
+        # Cosine length-normalization is already applied by the existing
+        # query-norm * document-norm divisor in TF-IDF scoring, so the
+        # expanded weights are not re-normalized here.
+        self._validate_prf_options(
+            feedback_docs=feedback_docs,
+            max_expansion_terms=max_expansion_terms,
+            alpha=alpha,
+            beta=beta,
+            scoring_mode=scoring_mode,
+        )
+        self._validate_search_options(
+            top_k=top_k,
+            retrieval_mode=(
+                "exact"
+                if not use_champions
+                else retrieval_mode
+            ),
+        )
+
+        empty = KeywordPrfSearchOutcome(
+            hits=(),
+            expansion=PrfExpansion(
+                added_terms=(),
+                feedback_chunk_ids=(),
+            ),
+        )
+        search_options = {
+            "top_k": feedback_docs,
+            "use_champions": use_champions,
+            "champion_size": champion_size,
+            "retrieval_mode": retrieval_mode,
+            "fallback": fallback,
+            "candidate_limit": candidate_limit,
+        }
+
+        if scoring_mode == "tfidf":
+            first_hits = self.search(query, **search_options)
+        else:
+            first_hits = self.search_bm25(
+                query,
+                k1=k1,
+                b=b,
+                **search_options,
+            )
+
+        if not first_hits:
+            return empty
+
+        feedback_chunk_ids = tuple(
+            hit.chunk_id for hit in first_hits
+        )
+        query_frequencies = Counter(
+            self.analyzer.analyze(query)
+        )
+        original_terms = set(query_frequencies)
+
+        with self._lock:
+            query_vector = self._tfidf_query_weights(
+                query_frequencies
+            )
+            centroid = self._feedback_centroid(
+                feedback_chunk_ids
+            )
+            expanded, added = self._expand_query_vector(
+                query_vector,
+                centroid,
+                alpha=alpha,
+                beta=beta,
+                max_expansion_terms=max_expansion_terms,
+                original_terms=original_terms,
+            )
+
+        if not expanded:
+            return KeywordPrfSearchOutcome(
+                hits=(),
+                expansion=PrfExpansion(
+                    added_terms=added,
+                    feedback_chunk_ids=feedback_chunk_ids,
+                ),
+            )
+
+        hits = self._search_weighted(
+            expanded,
+            top_k=top_k,
+            scoring_mode=scoring_mode,
+            retrieval_mode=(
+                "exact"
+                if not use_champions
+                else retrieval_mode
+            ),
+            fallback=fallback,
+            k1=k1,
+            b=b,
+        )
+        return KeywordPrfSearchOutcome(
+            hits=tuple(hits),
+            expansion=PrfExpansion(
+                added_terms=added,
+                feedback_chunk_ids=feedback_chunk_ids,
+            ),
+        )
 
     @property
     def postings_visited(self) -> int:
