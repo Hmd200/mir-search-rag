@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.models import DocumentStatus, SourceType
 
@@ -38,3 +38,9 @@ class DocumentListResponse(BaseModel):
     total: int
     offset: int
     limit: int
+
+
+class DocumentFromUrlRequest(BaseModel):
+    """Admin request to scrape a web page into the corpus."""
+
+    url: str = Field(min_length=1, max_length=2000)

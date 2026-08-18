@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { DragEvent, ChangeEvent } from "react";
+import type { DragEvent, ChangeEvent, FormEvent } from "react";
 
 import {
+  addDocumentFromUrl,
   deleteDocument,
   formatApiError,
   getKeywordStats,
@@ -21,6 +22,10 @@ type UploadState =
   | { status: "indexing"; fileName: string }
   | { status: "success"; fileName: string }
   | { status: "error"; fileName: string; message: string };
+
+function sourceTypeLabel(document: DocumentResponse): string {
+  return document.source_type === "web" ? "Web" : "Upload";
+}
 
 function IndexBadge({ ok, label }: { ok: boolean; label: string }) {
   return (
@@ -58,6 +63,7 @@ export function AdminPage() {
   const [error, setError] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
   const [upload, setUpload] = useState<UploadState>({ status: "idle" });
+  const [pageUrl, setPageUrl] = useState("");
   const [pendingDelete, setPendingDelete] = useState<DocumentResponse | null>(null);
   const [deleting, setDeleting] = useState(false);
 
@@ -128,6 +134,34 @@ export function AdminPage() {
     }
   }
 
+  async function ingestUrl(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const trimmed = pageUrl.trim();
+    if (!trimmed) {
+      setUpload({
+        status: "error",
+        fileName: "",
+        message: "Enter a URL to scrape.",
+      });
+      return;
+    }
+
+    try {
+      setUpload({ status: "indexing", fileName: trimmed });
+      const document = await addDocumentFromUrl(trimmed);
+      setUpload({ status: "success", fileName: document.title || trimmed });
+      setPageUrl("");
+      await refresh();
+      setError(null);
+    } catch (cause) {
+      setUpload({
+        status: "error",
+        fileName: trimmed,
+        message: formatApiError(cause),
+      });
+    }
+  }
+
   function onDrop(event: DragEvent<HTMLElement>) {
     event.preventDefault();
     setDragging(false);
@@ -168,7 +202,8 @@ export function AdminPage() {
       <div>
         <h1 className="font-display text-3xl text-ink">Admin dashboard</h1>
         <p className="mt-1 text-ink-soft">
-          Upload PDF or DOCX files. Both keyword and vector indexes update together.
+          Upload PDF or DOCX files, or scrape a web page. Both keyword and vector
+          indexes update together.
         </p>
       </div>
 
@@ -257,6 +292,45 @@ export function AdminPage() {
         </button>
       </section>
 
+      <section className="rounded-2xl border border-rule bg-card p-4 sm:p-5">
+        <h2 className="font-display text-xl text-ink">Add from URL</h2>
+        <p className="mt-1 text-sm text-ink-soft">
+          Scrape the main text of a public web page into the same corpus.
+        </p>
+        <form
+          onSubmit={(event) => void ingestUrl(event)}
+          className="mt-4 flex flex-col gap-3 sm:flex-row"
+        >
+          <label className="block min-w-0 flex-1">
+            <span className="sr-only">Page URL</span>
+            <input
+              type="url"
+              value={pageUrl}
+              onChange={(event) => setPageUrl(event.target.value)}
+              placeholder="https://example.com/article"
+              disabled={busy}
+              className="w-full rounded-lg border border-rule bg-paper px-3 py-2 text-sm outline-none focus:border-burgundy"
+            />
+          </label>
+          <button
+            type="submit"
+            disabled={busy}
+            className="rounded-full bg-burgundy px-5 py-2 text-sm font-semibold text-paper hover:bg-burgundy-dark disabled:opacity-60"
+          >
+            {upload.status === "indexing" ? "Indexing…" : "Add page"}
+          </button>
+        </form>
+        {upload.status === "indexing" ? (
+          <p className="mt-3 text-sm text-ink">Indexing {upload.fileName}…</p>
+        ) : null}
+        {upload.status === "success" ? (
+          <p className="mt-3 text-sm text-sage">Indexed {upload.fileName}.</p>
+        ) : null}
+        {upload.status === "error" ? (
+          <p className="mt-3 text-sm text-danger">{upload.message}</p>
+        ) : null}
+      </section>
+
       <section>
         <div className="mb-3 flex items-baseline justify-between gap-3">
           <h2 className="font-display text-2xl">Indexed documents</h2>
@@ -286,6 +360,7 @@ export function AdminPage() {
                 <thead className="border-b border-rule bg-paper-2/60 text-xs uppercase tracking-wide text-ink-soft">
                   <tr>
                     <th className="px-4 py-3 font-medium">Title</th>
+                    <th className="px-4 py-3 font-medium">Source</th>
                     <th className="px-4 py-3 font-medium">Type</th>
                     <th className="px-4 py-3 font-medium">Date added</th>
                     <th className="px-4 py-3 font-medium">Chunks</th>
@@ -298,15 +373,28 @@ export function AdminPage() {
                     <tr key={document.id} className="border-b border-rule last:border-0">
                       <td className="px-4 py-3">
                         <p className="font-medium text-ink">{document.title}</p>
-                        <p className="text-xs text-ink-soft">
-                          {document.original_filename ?? document.source_url ?? document.id}
-                        </p>
+                        {document.source_url ? (
+                          <a
+                            href={document.source_url}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="mt-1 block truncate text-xs text-burgundy hover:text-burgundy-dark"
+                            title={document.source_url}
+                          >
+                            {document.source_url}
+                          </a>
+                        ) : (
+                          <p className="text-xs text-ink-soft">
+                            {document.original_filename ?? document.id}
+                          </p>
+                        )}
                         {document.error_message ? (
                           <p className="mt-1 text-xs text-danger">
                             {document.error_message}
                           </p>
                         ) : null}
                       </td>
+                      <td className="px-4 py-3">{sourceTypeLabel(document)}</td>
                       <td className="px-4 py-3">{fileTypeLabel(document)}</td>
                       <td className="px-4 py-3 text-ink-soft">
                         {formatDate(document.created_at)}
@@ -342,9 +430,20 @@ export function AdminPage() {
                 >
                   <p className="font-medium">{document.title}</p>
                   <p className="text-xs text-ink-soft">
-                    {fileTypeLabel(document)} · {formatDate(document.created_at)} ·{" "}
-                    {document.chunk_count} chunks
+                    {sourceTypeLabel(document)} · {fileTypeLabel(document)} ·{" "}
+                    {formatDate(document.created_at)} · {document.chunk_count} chunks
                   </p>
+                  {document.source_url ? (
+                    <a
+                      href={document.source_url}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="mt-1 block truncate text-xs text-burgundy"
+                      title={document.source_url}
+                    >
+                      {document.source_url}
+                    </a>
+                  ) : null}
                   <div className="mt-2 flex flex-wrap gap-1">
                     <StatusBadge status={document.status} />
                     <IndexBadge ok={document.keyword_indexed} label="Keyword" />

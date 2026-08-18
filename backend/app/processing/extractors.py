@@ -3,8 +3,13 @@
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
+import ipaddress
+import socket
 
+import httpx
 import pymupdf
+import trafilatura
 from docx import Document as open_docx
 from docx.table import Table
 from docx.text.paragraph import Paragraph
@@ -16,6 +21,14 @@ from app.processing.schemas import (
     ExtractedSegment,
     UnsupportedDocumentError,
 )
+
+_FETCH_TIMEOUT_SECONDS = 10.0
+_MAX_DOWNLOAD_BYTES = 5 * 1024 * 1024
+_MAX_REDIRECTS = 5
+
+
+class ExtractionError(DocumentProcessingError):
+    """Raised when a web page cannot be fetched or converted into searchable text."""
 
 
 @dataclass(slots=True)
@@ -75,7 +88,7 @@ def _assemble_document(
         raise EmptyDocumentError("The document contains no extractable text.")
 
     normalized_format = source_format.lower()
-    if normalized_format not in {"pdf", "docx"}:
+    if normalized_format not in {"pdf", "docx", "html"}:
         raise UnsupportedDocumentError(f"Unsupported document format: {source_format}")
 
     return ExtractedDocument(
@@ -216,4 +229,137 @@ def extract_document(path: str | Path) -> ExtractedDocument:
         return _extract_docx(source_path)
     raise UnsupportedDocumentError(
         f"Unsupported file type '{suffix or 'unknown'}'. Only PDF and DOCX are allowed."
+    )
+
+
+def _is_blocked_ip(address: str) -> bool:
+    """Return True when an IP must not be fetched by the scraper."""
+
+    ip = ipaddress.ip_address(address)
+    return bool(
+        ip.is_private
+        or ip.is_loopback
+        or ip.is_link_local
+        or ip.is_reserved
+        or ip.is_multicast
+        or ip.is_unspecified
+    )
+
+
+def _assert_public_http_url(url: str) -> None:
+    """Reject non-http(s) URLs and hosts that resolve to internal addresses.
+
+    The SSRF guard resolves the hostname and inspects the resulting IP
+    addresses. Checking the URL string alone is not enough: DNS can map a
+    public-looking name onto loopback or RFC1918 space, which would let a
+    scrape request reach services that should stay inside the host network.
+    """
+
+    parsed = urlparse(url)
+    if parsed.scheme not in {"http", "https"}:
+        raise ExtractionError("Only http and https URLs are supported.")
+
+    hostname = parsed.hostname
+    if not hostname:
+        raise ExtractionError("URL is missing a hostname.")
+
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    try:
+        resolved = socket.getaddrinfo(
+            hostname,
+            port,
+            type=socket.SOCK_STREAM,
+        )
+    except OSError as error:
+        raise ExtractionError("The URL could not be reached.") from error
+
+    if not resolved:
+        raise ExtractionError("The URL could not be reached.")
+
+    for _family, _type, _proto, _canon, sockaddr in resolved:
+        # sockaddr[0] is the resolved IP; hostnames never reach this check.
+        if _is_blocked_ip(sockaddr[0]):
+            raise ExtractionError("Internal network URLs are not allowed.")
+
+
+def _join_redirect(current_url: str, location: str) -> str:
+    return str(httpx.URL(current_url).join(location))
+
+
+def _download_html(url: str) -> tuple[str, str, int]:
+    """Fetch HTML with a 10s timeout, 5MB cap, and redirect SSRF checks."""
+
+    current_url = url
+    headers = {"User-Agent": "mir-search-rag/0.1"}
+    _assert_public_http_url(current_url)
+
+    try:
+        with httpx.Client(
+            timeout=_FETCH_TIMEOUT_SECONDS,
+            follow_redirects=False,
+        ) as client:
+            for _ in range(_MAX_REDIRECTS + 1):
+                _assert_public_http_url(current_url)
+                with client.stream("GET", current_url, headers=headers) as response:
+                    if response.is_redirect:
+                        location = response.headers.get("location")
+                        if not location:
+                            raise ExtractionError("The URL could not be reached.")
+                        # Re-validate every hop so a public URL cannot bounce
+                        # onto localhost or a private network.
+                        current_url = _join_redirect(current_url, location)
+                        continue
+
+                    if response.status_code >= 400:
+                        raise ExtractionError("The URL could not be reached.")
+
+                    chunks: list[bytes] = []
+                    total = 0
+                    for piece in response.iter_bytes():
+                        total += len(piece)
+                        if total > _MAX_DOWNLOAD_BYTES:
+                            raise ExtractionError(
+                                "Downloaded content exceeds the 5 MB limit."
+                            )
+                        chunks.append(piece)
+
+                    html = b"".join(chunks).decode("utf-8", errors="replace")
+                    return str(response.url), html, total
+
+            raise ExtractionError("The URL could not be reached.")
+    except ExtractionError:
+        raise
+    except httpx.TimeoutException as error:
+        raise ExtractionError(
+            "The URL timed out after 10 seconds."
+        ) from error
+    except httpx.RequestError as error:
+        raise ExtractionError("The URL could not be reached.") from error
+
+
+def extract_from_url(url: str) -> ExtractedDocument:
+    """Scrape the main text of a public http(s) page into ExtractedDocument."""
+
+    _final_url, html, download_bytes = _download_html(url.strip())
+    extracted_text = trafilatura.extract(
+        html,
+        include_comments=False,
+        include_tables=True,
+    )
+    if not extracted_text or not extracted_text.strip():
+        raise ExtractionError("The page contains no extractable text.")
+
+    metadata_record = trafilatura.extract_metadata(html)
+    page_title = metadata_record.title if metadata_record is not None else None
+    hostname = urlparse(url).hostname or "Untitled page"
+    title = (page_title or "").strip() or hostname
+
+    return _assemble_document(
+        title=title,
+        source_format="html",
+        raw_segments=[_RawSegment(text=extracted_text)],
+        metadata={
+            "source_url": url.strip(),
+            "download_bytes": download_bytes,
+        },
     )

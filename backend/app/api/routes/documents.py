@@ -19,10 +19,15 @@ from app.api.dependencies import (
     get_keyword_index,
     get_vector_store,
 )
-from app.api.schemas.documents import DocumentListResponse, DocumentResponse
+from app.api.schemas.documents import (
+    DocumentFromUrlRequest,
+    DocumentListResponse,
+    DocumentResponse,
+)
 from app.core.config import Settings, get_settings
 from app.models import DocumentStatus, SourceType
 from app.processing import DocumentProcessingError
+from app.processing.extractors import ExtractionError
 from app.retrieval.embeddings import EmbeddingProvider
 from app.services.documents import (
     DocumentNotFoundError,
@@ -91,6 +96,46 @@ def upload_document(
     except DocumentProcessingError as error:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(error)
+        ) from error
+    except DocumentServiceError as error:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="The document could not be stored.",
+        ) from error
+
+    return DocumentResponse.model_validate(document)
+
+
+@router.post(
+    "/from-url",
+    response_model=DocumentResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def ingest_document_from_url(
+    payload: DocumentFromUrlRequest,
+    service: Annotated[DocumentService, Depends(_service)],
+) -> DocumentResponse:
+    """Scrape a public web page and index it like an uploaded file."""
+
+    try:
+        document = service.ingest_from_url(payload.url)
+    except ExtractionError as error:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(error),
+        ) from error
+    except DuplicateDocumentError as error:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "message": str(error),
+                "existing_document_id": error.existing_document_id,
+            },
+        ) from error
+    except DocumentProcessingError as error:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(error),
         ) from error
     except DocumentServiceError as error:
         raise HTTPException(

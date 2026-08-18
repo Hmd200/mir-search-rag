@@ -38,7 +38,7 @@ class ExtractedDocument:
     """Normalized text and citation structure extracted from a source file."""
 
     title: str
-    source_format: Literal["pdf", "docx"]
+    source_format: Literal["pdf", "docx", "html"]
     text: str
     segments: tuple[ExtractedSegment, ...]
     metadata: dict[str, Any] = field(default_factory=dict)

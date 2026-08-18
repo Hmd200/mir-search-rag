@@ -14,7 +14,13 @@ from sqlalchemy.orm import Session
 
 from app.core.config import Settings
 from app.models import Chunk, Document, DocumentStatus, SourceType
-from app.processing import DocumentChunker, DocumentProcessingError, extract_document
+from app.processing import (
+    DocumentChunker,
+    DocumentProcessingError,
+    ExtractedDocument,
+    extract_document,
+)
+from app.processing.extractors import extract_from_url
 from app.retrieval.embeddings import EmbeddingProvider
 from app.storage.keyword_index import KeywordIndex, KeywordIndexError
 from app.storage.vector_store import ChromaVectorStore, VectorChunk, VectorStoreError
@@ -88,8 +94,6 @@ class DocumentService:
         stored_filename = f"{document_id}{suffix}"
         final_path = self.settings.upload_dir / stored_filename
         temporary_path = self.settings.upload_dir / f".{stored_filename}.part"
-        keyword_index_written = False
-        vector_index_attempted = False
 
         try:
             file_size, sha256 = self._write_temporary_upload(
@@ -105,22 +109,104 @@ class DocumentService:
 
             temporary_path.replace(final_path)
             extracted = extract_document(final_path)
+            display_title = extracted.title
+            if display_title == final_path.stem:
+                display_title = Path(original_filename).stem
+            return self._index_extracted(
+                extracted,
+                document_id=document_id,
+                title=display_title,
+                original_filename=original_filename,
+                stored_filename=stored_filename,
+                source_type=SourceType.UPLOAD,
+                source_url=None,
+                mime_type=upload.content_type,
+                file_size_bytes=file_size,
+                sha256=sha256,
+            )
+        except (DocumentServiceError, DocumentProcessingError):
+            self.session.rollback()
+            temporary_path.unlink(missing_ok=True)
+            final_path.unlink(missing_ok=True)
+            raise
+        except (
+            OSError,
+            SQLAlchemyError,
+            KeywordIndexError,
+            VectorStoreError,
+        ) as error:
+            self.session.rollback()
+            temporary_path.unlink(missing_ok=True)
+            final_path.unlink(missing_ok=True)
+            raise DocumentServiceError(
+                "Could not store and index the uploaded document."
+            ) from error
+
+    def ingest_from_url(self, url: str) -> Document:
+        """Scrape a URL, then index it through the same dual-index path as uploads."""
+
+        extracted = extract_from_url(url)
+        document_id = str(uuid4())
+        sha256 = hashlib.sha256(extracted.text.encode("utf-8")).hexdigest()
+        download_bytes = extracted.metadata.get("download_bytes")
+        file_size = download_bytes if isinstance(download_bytes, int) else None
+        return self._index_extracted(
+            extracted,
+            document_id=document_id,
+            title=extracted.title,
+            original_filename=None,
+            stored_filename=None,
+            source_type=SourceType.WEB,
+            source_url=url.strip(),
+            mime_type="text/html",
+            file_size_bytes=file_size,
+            sha256=sha256,
+        )
+
+    def _index_extracted(
+        self,
+        extracted: ExtractedDocument,
+        *,
+        document_id: str,
+        title: str,
+        original_filename: str | None,
+        stored_filename: str | None,
+        source_type: SourceType,
+        source_url: str | None,
+        mime_type: str | None,
+        file_size_bytes: int | None,
+        sha256: str | None,
+    ) -> Document:
+        """Chunk, persist, and write both indexes for one extracted document.
+
+        Upload and URL ingest share this path so adding or deleting a
+        source always keeps the inverted index and vector store aligned.
+        """
+
+        keyword_index_written = False
+        vector_index_attempted = False
+        try:
             chunk_drafts = DocumentChunker(
                 chunk_size=self.settings.chunk_size,
                 chunk_overlap=self.settings.chunk_overlap,
             ).split(extracted)
 
-            display_title = extracted.title
-            if display_title == final_path.stem:
-                display_title = Path(original_filename).stem
+            if sha256 is not None:
+                duplicate = self.session.scalar(
+                    select(Document).where(Document.sha256 == sha256)
+                )
+                if duplicate is not None:
+                    raise DuplicateDocumentError(duplicate.id)
+
             document = Document(
                 id=document_id,
-                title=display_title,
+                title=title,
                 original_filename=original_filename,
                 stored_filename=stored_filename,
-                source_type=SourceType.UPLOAD,
-                mime_type=upload.content_type,
-                file_size_bytes=file_size,
+                source_type=source_type,
+                source_url=source_url,
+                mime_type=mime_type,
+                file_size_bytes=file_size_bytes,
                 sha256=sha256,
                 status=DocumentStatus.PENDING,
                 chunk_count=len(chunk_drafts),
@@ -175,14 +261,10 @@ class DocumentService:
             return document
         except (DocumentServiceError, DocumentProcessingError):
             self.session.rollback()
-            try:
-                if vector_index_attempted:
-                    self.vector_store.delete_document(document_id)
-                if keyword_index_written:
-                    self.keyword_index.delete_document(document_id)
-            finally:
-                temporary_path.unlink(missing_ok=True)
-                final_path.unlink(missing_ok=True)
+            if vector_index_attempted:
+                self.vector_store.delete_document(document_id)
+            if keyword_index_written:
+                self.keyword_index.delete_document(document_id)
             raise
         except (
             OSError,
@@ -191,14 +273,10 @@ class DocumentService:
             VectorStoreError,
         ) as error:
             self.session.rollback()
-            try:
-                if vector_index_attempted:
-                    self.vector_store.delete_document(document_id)
-                if keyword_index_written:
-                    self.keyword_index.delete_document(document_id)
-            finally:
-                temporary_path.unlink(missing_ok=True)
-                final_path.unlink(missing_ok=True)
+            if vector_index_attempted:
+                self.vector_store.delete_document(document_id)
+            if keyword_index_written:
+                self.keyword_index.delete_document(document_id)
             raise DocumentServiceError(
                 "Could not store and index the uploaded document."
             ) from error

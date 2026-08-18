@@ -305,6 +305,15 @@ export async function uploadDocument(
   return data;
 }
 
+export async function addDocumentFromUrl(
+  url: string,
+): Promise<DocumentResponse> {
+  const { data } = await client.post<DocumentResponse>("/documents/from-url", {
+    url,
+  });
+  return data;
+}
+
 export async function deleteDocument(documentId: string): Promise<void> {
   await client.delete(`/documents/${encodeURIComponent(documentId)}`);
 }
