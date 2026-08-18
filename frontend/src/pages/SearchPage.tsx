@@ -90,6 +90,100 @@ function sourceElementId(citationNumber: number): string {
   return `rag-source-${citationNumber}`;
 }
 
+function contributionIntensityClass(normalized: number): string {
+  if (normalized >= 0.75) {
+    return "bg-burgundy/60";
+  }
+  if (normalized >= 0.5) {
+    return "bg-burgundy/40";
+  }
+  if (normalized >= 0.25) {
+    return "bg-burgundy/25";
+  }
+  return "bg-burgundy/10";
+}
+
+function lookupContribution(
+  matched: string,
+  contributions: Record<string, number>,
+): { term: string; score: number } | null {
+  const lowered = matched.toLowerCase();
+  for (const [term, score] of Object.entries(contributions)) {
+    if (lowered === term || lowered.startsWith(term)) {
+      return { term, score };
+    }
+  }
+  return null;
+}
+
+function GradedSnippet({
+  text,
+  terms,
+  contributions,
+}: {
+  text: string;
+  terms?: readonly string[];
+  contributions: Record<string, number>;
+}) {
+  const unique = [...new Set((terms ?? []).filter(Boolean))];
+  if (!unique.length) {
+    return (
+      <p className="whitespace-pre-wrap text-sm leading-relaxed text-ink">{text}</p>
+    );
+  }
+
+  // Intensity is max-normalized inside this hit only. A global scale would
+  // paint a weak result as strongly as the top hit just because one of its
+  // terms is the strongest *in that weak document*.
+  const maxContribution = Math.max(
+    ...Object.values(contributions).map((value) => Math.abs(value)),
+    Number.EPSILON,
+  );
+
+  const escaped = unique.map((term) =>
+    term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"),
+  );
+  const pattern = new RegExp(`(${escaped.join("|")})\\w*`, "gi");
+  const parts: ReactNode[] = [];
+  let lastIndex = 0;
+  let match = pattern.exec(text);
+
+  while (match) {
+    if (match.index > lastIndex) {
+      parts.push(text.slice(lastIndex, match.index));
+    }
+    const token = match[0];
+    const found = lookupContribution(token, contributions);
+    const normalized = found
+      ? Math.abs(found.score) / maxContribution
+      : 0;
+    parts.push(
+      <mark
+        key={`${match.index}-${token}`}
+        className={`rounded-sm ${contributionIntensityClass(normalized)}`}
+        title={
+          found ? `${found.term}: ${found.score.toFixed(2)}` : undefined
+        }
+      >
+        {token}
+      </mark>,
+    );
+    lastIndex = match.index + match[0].length;
+    if (pattern.lastIndex === match.index) {
+      pattern.lastIndex += 1;
+    }
+    match = pattern.exec(text);
+  }
+
+  if (lastIndex < text.length) {
+    parts.push(text.slice(lastIndex));
+  }
+
+  return (
+    <p className="whitespace-pre-wrap text-sm leading-relaxed text-ink">{parts}</p>
+  );
+}
+
 function ResultCard({ hit }: { hit: DisplayHit }) {
   const [open, setOpen] = useState(false);
   const hasContributions =
@@ -108,7 +202,15 @@ function ResultCard({ hit }: { hit: DisplayHit }) {
         </div>
       </div>
       <div className="mt-3">
-        <HighlightedSnippet text={hit.text} terms={hit.matched_terms} />
+        {hasContributions ? (
+          <GradedSnippet
+            text={hit.text}
+            terms={hit.matched_terms}
+            contributions={hit.term_contributions ?? {}}
+          />
+        ) : (
+          <HighlightedSnippet text={hit.text} terms={hit.matched_terms} />
+        )}
       </div>
       {hasContributions ? (
         <div className="mt-4 border-t border-rule pt-3">
@@ -605,6 +707,11 @@ export function SearchPage() {
 
       {!loading && algorithm !== "rag" && hits && hits.length > 0 ? (
         <div className="space-y-3">
+          {(algorithm === "tfidf" || algorithm === "bm25") ? (
+            <p className="text-sm text-ink-soft">
+              Highlight intensity = term's contribution to the score
+            </p>
+          ) : null}
           {hits.map((hit) => (
             <ResultCard key={hit.chunk_id} hit={hit} />
           ))}
