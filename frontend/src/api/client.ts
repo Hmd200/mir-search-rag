@@ -40,6 +40,18 @@ export type KeywordSearchResult = {
   section_title: string | null;
   matched_terms: string[];
   term_contributions: Record<string, number>;
+  retrieval_score: number | null;
+  rerank_score: number | null;
+};
+
+export type PrfAddedTerm = {
+  term: string;
+  weight: number;
+};
+
+export type PrfExpansion = {
+  added_terms: PrfAddedTerm[];
+  feedback_chunk_ids: string[];
 };
 
 export type KeywordSearchResponse = {
@@ -48,6 +60,8 @@ export type KeywordSearchResponse = {
   result_count: number;
   elapsed_ms: number;
   results: KeywordSearchResult[];
+  expansion: PrfExpansion | null;
+  reranked: boolean;
 };
 
 export type BM25SearchResponse = {
@@ -58,6 +72,8 @@ export type BM25SearchResponse = {
   result_count: number;
   elapsed_ms: number;
   results: KeywordSearchResult[];
+  expansion: PrfExpansion | null;
+  reranked: boolean;
 };
 
 export type SemanticSearchResult = {
@@ -108,6 +124,33 @@ export type KeywordSearchParams = {
   q: string;
   top_k?: number;
   candidate_limit?: number;
+  use_prf?: boolean;
+};
+
+export type RagCitedChunk = {
+  chunk_id: string;
+  document_id: string;
+  document_title: string;
+  page_number: number | null;
+  text: string;
+  score: number;
+  retrieval_score: number;
+  rerank_score: number | null;
+};
+
+export type RagResponse = {
+  query: string;
+  answer: string;
+  cited_chunks: RagCitedChunk[];
+  invalid_citations: string[];
+  abstained: boolean;
+  elapsed_ms: number;
+};
+
+export type RagSearchParams = {
+  query: string;
+  top_k?: number;
+  use_reranker?: boolean;
 };
 
 export type BM25SearchParams = {
@@ -291,6 +334,17 @@ export async function searchSemantic(
     "/search/semantic",
     { params },
   );
+  return data;
+}
+
+export async function searchRag(
+  params: RagSearchParams,
+): Promise<RagResponse> {
+  const { data } = await client.post<RagResponse>("/search/rag", {
+    query: params.query,
+    top_k: params.top_k ?? 5,
+    use_reranker: params.use_reranker ?? false,
+  });
   return data;
 }
 
