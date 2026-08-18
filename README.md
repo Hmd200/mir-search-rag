@@ -6,13 +6,13 @@
 
 <!--
   TODO (fill in before submission):
-  - [ ] GitHub repository URL below
+  - [x] GitHub repository URL below
   - [ ] Demo video link in the "Video Demonstration" section
   - [ ] Evaluation results table (optional, see note in that section)
   - [ ] Final review pass after the code-quality/comment pass
 -->
 
-**Repository:** `TODO: add GitHub URL here`
+**Repository:** https://github.com/Hmd200/mir-search-rag
 
 ---
 
