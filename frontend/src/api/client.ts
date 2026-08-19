@@ -148,12 +148,14 @@ export type RagResponse = {
   invalid_citations: string[];
   abstained: boolean;
   elapsed_ms: number;
+  rewritten_query: string | null;
 };
 
 export type RagSearchParams = {
   query: string;
   top_k?: number;
   use_reranker?: boolean;
+  use_query_rewrite?: boolean;
 };
 
 export type BM25SearchParams = {
@@ -356,6 +358,7 @@ export async function searchRag(
     query: params.query,
     top_k: params.top_k ?? 5,
     use_reranker: params.use_reranker ?? false,
+    use_query_rewrite: params.use_query_rewrite ?? false,
   });
   return data;
 }

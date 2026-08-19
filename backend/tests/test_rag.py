@@ -26,6 +26,7 @@ def _record(index: int) -> SemanticSearchRecord:
 class FakeSearch:
     def __init__(self, records: list[SemanticSearchRecord]) -> None:
         self._records = records
+        self.queries: list[str] = []
 
     def search(
         self,
@@ -33,18 +34,20 @@ class FakeSearch:
         *,
         top_k: int,
     ) -> list[SemanticSearchRecord]:
-        del query
+        self.queries.append(query)
         return self._records[:top_k]
 
 
 class FakeLLM:
-    def __init__(self, answer: str) -> None:
-        self._answer = answer
+    def __init__(self, answer: str, *, answers: list[str] | None = None) -> None:
+        self._answers = list(answers) if answers is not None else [answer]
         self.prompts: list[tuple[str, str]] = []
 
     def generate(self, system_prompt: str, user_prompt: str) -> str:
         self.prompts.append((system_prompt, user_prompt))
-        return self._answer
+        if not self._answers:
+            raise AssertionError("FakeLLM received more generate() calls than answers.")
+        return self._answers.pop(0)
 
 
 class BoomLLM:
@@ -133,3 +136,77 @@ def test_llm_error_surfaces_as_503() -> None:
 
     assert response.status_code == 503
     assert response.json()["detail"] == "The language model is unreachable."
+
+
+def test_query_rewrite_changes_retrieval_but_generation_uses_original() -> None:
+    records = [_record(index) for index in range(1, 4)]
+    search = FakeSearch(records)
+    llm = FakeLLM(
+        "",
+        answers=[
+            "Okapi BM25 ranking inverted index",
+            "BM25 saturates term frequency [1].",
+        ],
+    )
+    service = RagService(search, llm)
+    original = "How do search engines turn words into scores?"
+
+    outcome = service.generate(original, top_k=3, use_query_rewrite=True)
+
+    assert search.queries == ["Okapi BM25 ranking inverted index"]
+    assert outcome.rewritten_query == "Okapi BM25 ranking inverted index"
+    assert outcome.query == original
+    assert "Question: How do search engines turn words into scores?" in llm.prompts[1][1]
+    assert outcome.answer == "BM25 saturates term frequency [1]."
+
+
+def test_empty_rewrite_falls_back_to_the_original_query() -> None:
+    records = [_record(index) for index in range(1, 3)]
+    search = FakeSearch(records)
+    llm = FakeLLM(
+        "",
+        answers=["   \n", "Grounded answer [1]."],
+    )
+    service = RagService(search, llm)
+
+    outcome = service.generate("What is BM25?", top_k=2, use_query_rewrite=True)
+
+    assert search.queries == ["What is BM25?"]
+    assert outcome.rewritten_query == "What is BM25?"
+    assert outcome.answer == "Grounded answer [1]."
+
+
+def test_rewrite_llm_error_falls_back_without_failing_generation() -> None:
+    records = [_record(index) for index in range(1, 3)]
+    search = FakeSearch(records)
+
+    class RewriteThenAnswer:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def generate(self, system_prompt: str, user_prompt: str) -> str:
+            del system_prompt, user_prompt
+            self.calls += 1
+            if self.calls == 1:
+                raise LLMError("rewrite failed")
+            return f"Grounded answer [1]."
+
+    llm = RewriteThenAnswer()
+    service = RagService(search, llm)
+
+    outcome = service.generate("What is BM25?", top_k=2, use_query_rewrite=True)
+
+    assert search.queries == ["What is BM25?"]
+    assert outcome.rewritten_query == "What is BM25?"
+    assert outcome.abstained is False
+    assert "[1]" in outcome.answer
+
+
+def test_rewrite_disabled_leaves_rewritten_query_unset() -> None:
+    service = _service("Lexical search uses postings [1].", chunk_count=2)
+
+    outcome = service.generate("What is an inverted index?", top_k=2)
+
+    assert outcome.rewritten_query is None
+    assert isinstance(service._search, FakeSearch)
+    assert service._search.queries == ["What is an inverted index?"]

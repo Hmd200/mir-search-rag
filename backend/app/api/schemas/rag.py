@@ -9,6 +9,7 @@ class RagRequest(BaseModel):
     query: str = Field(min_length=1, max_length=500)
     top_k: int = Field(default=5, ge=1, le=50)
     use_reranker: bool = False
+    use_query_rewrite: bool = False
 
 
 class RagCitedChunk(BaseModel):
@@ -34,3 +35,4 @@ class RagResponse(BaseModel):
     invalid_citations: list[str]
     abstained: bool
     elapsed_ms: float
+    rewritten_query: str | None = None

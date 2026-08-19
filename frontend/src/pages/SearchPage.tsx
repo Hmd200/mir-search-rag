@@ -305,6 +305,131 @@ function DocumentRelationGraph({
   );
 }
 
+function heatmapCellClass(normalized: number): string {
+  if (normalized <= 0) {
+    return "bg-paper-2 text-ink-soft";
+  }
+  if (normalized >= 0.75) {
+    return "bg-burgundy/70 text-paper";
+  }
+  if (normalized >= 0.5) {
+    return "bg-burgundy/50 text-paper";
+  }
+  if (normalized >= 0.25) {
+    return "bg-burgundy/30 text-ink";
+  }
+  return "bg-burgundy/15 text-ink";
+}
+
+function KeywordHeatmap({ hits }: { hits: DisplayHit[] }) {
+  // TF-IDF/BM25 only: cells are summed term_contributions per document.
+  const documents: {
+    documentId: string;
+    title: string;
+    contributions: Record<string, number>;
+  }[] = [];
+  const totals = new Map<string, number>();
+
+  for (const hit of hits) {
+    let row = documents.find((item) => item.documentId === hit.document_id);
+    if (!row) {
+      row = {
+        documentId: hit.document_id,
+        title: hit.document_title,
+        contributions: {},
+      };
+      documents.push(row);
+    }
+    for (const [term, value] of Object.entries(hit.term_contributions ?? {})) {
+      row.contributions[term] = (row.contributions[term] ?? 0) + value;
+      totals.set(term, (totals.get(term) ?? 0) + Math.abs(value));
+    }
+  }
+
+  const terms = [...totals.entries()]
+    .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
+    .slice(0, 8)
+    .map(([term]) => term);
+
+  if (documents.length === 0 || terms.length === 0) {
+    return null;
+  }
+
+  const maxCell = Math.max(
+    ...documents.flatMap((row) =>
+      terms.map((term) => Math.abs(row.contributions[term] ?? 0)),
+    ),
+    Number.EPSILON,
+  );
+
+  function jumpToDocument(documentId: string) {
+    document.getElementById(resultDocumentElementId(documentId))?.scrollIntoView({
+      behavior: "smooth",
+      block: "center",
+    });
+  }
+
+  return (
+    <section className="rounded-2xl border border-rule bg-card p-4 sm:p-5">
+      <h3 className="font-display text-xl text-ink">Keyword heatmap</h3>
+      <div className="mt-3 overflow-x-auto">
+        <table className="w-full min-w-[480px] border-separate border-spacing-1 text-left text-xs">
+          <thead>
+            <tr>
+              <th className="px-2 py-1 font-medium text-ink-soft">Document</th>
+              {terms.map((term) => (
+                <th
+                  key={term}
+                  className="px-2 py-1 text-center font-medium text-ink-soft"
+                >
+                  {term}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {documents.map((row) => (
+              <tr
+                key={row.documentId}
+                className="cursor-pointer"
+                onClick={() => jumpToDocument(row.documentId)}
+              >
+                <th className="px-2 py-1 font-medium text-ink" scope="row">
+                  <button
+                    type="button"
+                    className="text-left text-burgundy hover:text-burgundy-dark"
+                    onClick={() => jumpToDocument(row.documentId)}
+                  >
+                    {shortDocumentTitle(row.title, 22)}
+                  </button>
+                </th>
+                {terms.map((term) => {
+                  const value = row.contributions[term] ?? 0;
+                  const normalized = Math.abs(value) / maxCell;
+                  return (
+                    <td key={term} className="p-0">
+                      <div
+                        className={`rounded-md px-2 py-2 text-center font-mono ${heatmapCellClass(normalized)}`}
+                        title={`${row.title} · ${term}: ${value.toFixed(3)}`}
+                      >
+                        {value === 0 ? "—" : value.toFixed(2)}
+                      </div>
+                    </td>
+                  );
+                })}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <p className="mt-2 text-sm text-ink-soft">
+        Cell color is that term’s contribution to the document’s ranking
+        score; darker burgundy is a stronger match.
+      </p>
+    </section>
+  );
+}
+
 function contributionIntensityClass(normalized: number): string {
   if (normalized >= 0.75) {
     return "bg-burgundy/60";
@@ -561,6 +686,14 @@ function RagResults({
 
   return (
     <div className="space-y-6">
+      {result.rewritten_query ? (
+        <p className="text-sm text-ink-soft">
+          Retrieved with:{" "}
+          <span className="rounded-full border border-rule bg-card px-3 py-1 text-ink">
+            {result.rewritten_query}
+          </span>
+        </p>
+      ) : null}
       {result.abstained ? (
         <div className="rounded-2xl border border-rule bg-card px-6 py-12 text-center">
           <p className="font-display text-2xl">Not enough evidence in the corpus</p>
@@ -599,12 +732,13 @@ function RagResults({
 }
 
 // Search UI: dispatches TF-IDF, BM25, semantic, and RAG; exposes PRF,
-// BM25 k1/b, and the cross-encoder reranker as toggles/advanced controls.
+// BM25 k1/b, query rewriting, and the cross-encoder reranker as toggles.
 export function SearchPage() {
   const [query, setQuery] = useState("");
   const [algorithm, setAlgorithm] = useState<Algorithm>("tfidf");
   const [usePrf, setUsePrf] = useState(false);
   const [useReranker, setUseReranker] = useState(false);
+  const [useQueryRewrite, setUseQueryRewrite] = useState(false);
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [topK, setTopK] = useState(10);
   const [k1, setK1] = useState(1.5);
@@ -683,6 +817,7 @@ export function SearchPage() {
           query: trimmed,
           top_k: topK,
           use_reranker: useReranker,
+          use_query_rewrite: useQueryRewrite,
         });
         setRagResult(response);
         setElapsedMs(response.elapsed_ms);
@@ -763,15 +898,26 @@ export function SearchPage() {
         ) : null}
 
         {algorithm === "rag" ? (
-          <label className="flex cursor-pointer items-center gap-2 text-sm text-ink">
-            <input
-              type="checkbox"
-              checked={useReranker}
-              onChange={(event) => setUseReranker(event.target.checked)}
-              className="size-4 accent-burgundy"
-            />
-            Rerank results
-          </label>
+          <div className="flex flex-wrap gap-4">
+            <label className="flex cursor-pointer items-center gap-2 text-sm text-ink">
+              <input
+                type="checkbox"
+                checked={useReranker}
+                onChange={(event) => setUseReranker(event.target.checked)}
+                className="size-4 accent-burgundy"
+              />
+              Rerank results
+            </label>
+            <label className="flex cursor-pointer items-center gap-2 text-sm text-ink">
+              <input
+                type="checkbox"
+                checked={useQueryRewrite}
+                onChange={(event) => setUseQueryRewrite(event.target.checked)}
+                className="size-4 accent-burgundy"
+              />
+              Rewrite query
+            </label>
+          </div>
         ) : null}
 
         <div>
@@ -948,6 +1094,9 @@ export function SearchPage() {
               </div>
             );
           })}
+          {algorithm === "tfidf" || algorithm === "bm25" ? (
+            <KeywordHeatmap hits={hits} />
+          ) : null}
           {new Set(hits.map((hit) => hit.document_id)).size >= 2 ? (
             <DocumentRelationGraph
               hits={hits}

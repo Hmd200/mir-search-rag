@@ -48,6 +48,7 @@ def rag_search(
             payload.query,
             top_k=payload.top_k,
             use_reranker=payload.use_reranker,
+            use_query_rewrite=payload.use_query_rewrite,
         )
     except LLMError as error:
         raise HTTPException(
@@ -80,4 +81,5 @@ def rag_search(
         invalid_citations=list(outcome.invalid_citations),
         abstained=outcome.abstained,
         elapsed_ms=outcome.elapsed_ms,
+        rewritten_query=outcome.rewritten_query,
     )

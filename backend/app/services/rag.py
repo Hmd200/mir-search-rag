@@ -6,7 +6,7 @@ import re
 from dataclasses import dataclass
 from time import perf_counter
 
-from app.retrieval.llm import LLMClient, strip_think_blocks
+from app.retrieval.llm import LLMClient, LLMError, strip_think_blocks
 from app.retrieval.reranker import CrossEncoderReranker, reranker_from_settings
 from app.services.semantic_search import (
     SemanticSearchRecord,
@@ -25,6 +25,13 @@ If the context does not contain enough information to answer the question, \
 reply exactly:
 INSUFFICIENT_EVIDENCE
 Do not use outside knowledge or invent citations.\
+"""
+
+_REWRITE_SYSTEM_PROMPT = """\
+You rewrite a user's question into a short search query for a document index.
+Reply with only the rewritten query. No quotes, labels, or explanation.
+Keep the original meaning. Expand abbreviations and add likely keywords.
+If the question is already a good search query, repeat it unchanged.\
 """
 
 
@@ -72,6 +79,7 @@ class RagOutcome:
     invalid_citations: tuple[str, ...]
     abstained: bool
     elapsed_ms: float
+    rewritten_query: str | None = None
 
 
 def _format_context_chunk(
@@ -96,6 +104,31 @@ def _build_context(records: list[RagContextChunk]) -> str:
 
 def _build_user_prompt(query: str, context: str) -> str:
     return f"Context:\n{context}\n\nQuestion: {query}"
+
+
+def _clean_rewritten_query(raw: str) -> str:
+    """Take the first non-empty line and drop quotes or 'Query:' prefixes."""
+
+    text = strip_think_blocks(raw)
+    first_line = ""
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped:
+            first_line = stripped
+            break
+    if len(first_line) >= 2 and first_line[0] == first_line[-1] and first_line[0] in {
+        '"',
+        "'",
+    }:
+        first_line = first_line[1:-1].strip()
+    lowered = first_line.casefold()
+    for prefix in ("rewritten query:", "search query:", "query:"):
+        if lowered.startswith(prefix):
+            first_line = first_line[len(prefix) :].strip()
+            break
+    if len(first_line) > 500:
+        return first_line[:500].rstrip()
+    return first_line
 
 
 def validate_citations(
@@ -232,19 +265,37 @@ class RagService:
             )
         return selected
 
+    def rewrite_query(self, query: str) -> str:
+        """Return a retrieval query, or the original on empty/failed rewrite."""
+
+        try:
+            raw = self._llm.generate(_REWRITE_SYSTEM_PROMPT, query)
+        except LLMError:
+            return query
+        cleaned = _clean_rewritten_query(raw)
+        return cleaned or query
+
     def generate(
         self,
         query: str,
         *,
         top_k: int = 5,
         use_reranker: bool = False,
+        use_query_rewrite: bool = False,
     ) -> RagOutcome:
         started = perf_counter()
+        rewritten_query: str | None = None
+        retrieval_query = query
+        if use_query_rewrite:
+            retrieval_query = self.rewrite_query(query)
+            rewritten_query = retrieval_query
+
         retrieved = self._search.search(
-            query,
+            retrieval_query,
             top_k=_RETRIEVAL_K,
         )
         # Existing top-20 -> top-N narrowing; rerank replaces the slice.
+        # Rerank against the original question so the prompt stays on-intent.
         context_records = self.select_context(
             query,
             retrieved,
@@ -260,6 +311,7 @@ class RagService:
                 invalid_citations=(),
                 abstained=True,
                 elapsed_ms=(perf_counter() - started) * 1000,
+                rewritten_query=rewritten_query,
             )
 
         raw_answer = self._llm.generate(
@@ -280,6 +332,7 @@ class RagService:
                 invalid_citations=(),
                 abstained=True,
                 elapsed_ms=(perf_counter() - started) * 1000,
+                rewritten_query=rewritten_query,
             )
 
         cleaned, invalid = validate_citations(
@@ -296,4 +349,5 @@ class RagService:
             invalid_citations=invalid,
             abstained=False,
             elapsed_ms=(perf_counter() - started) * 1000,
+            rewritten_query=rewritten_query,
         )
