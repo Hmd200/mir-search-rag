@@ -134,8 +134,13 @@ python -m venv .venv
 # macOS/Linux
 source .venv/bin/activate
 
-pip install -r requirements.txt
+pip install -e .
 ```
+
+> **Note:** dependencies are declared in `pyproject.toml`, not a
+> `requirements.txt` file. `pip install -e .` installs the backend and all
+> of its dependencies in one step (the `-e` installs it in "editable" mode,
+> so code changes take effect immediately without reinstalling).
 
 > **Windows note:** if `.venv\Scripts\activate` is blocked by PowerShell's
 > execution policy, run this once (per user, no admin required):
