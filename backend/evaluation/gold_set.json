@@ -1,0 +1,62 @@
+[
+  {
+    "query": "Okapi BM25 ranking function inverted index postings lists term frequency",
+    "relevant_files": ["classical_ir.txt"],
+    "note": "exact vocabulary match on BM25, inverted index, and postings lists"
+  },
+  {
+    "query": "dense vector embeddings cosine similarity vocabulary mismatch",
+    "relevant_files": ["semantic_search.txt"],
+    "note": "exact vocabulary match on embeddings, cosine similarity, and vocabulary mismatch"
+  },
+  {
+    "query": "retrieval-augmented generation citations grounding hallucination",
+    "relevant_files": ["rag_llm.txt"],
+    "note": "exact vocabulary match on RAG, citations, grounding, and hallucination"
+  },
+  {
+    "query": "compost mulch tomato pruning raised beds basil harvest",
+    "relevant_files": ["unrelated_topic.txt"],
+    "note": "exact vocabulary match on the gardening document"
+  },
+  {
+    "query": "How do search engines turn words into scores using collection statistics?",
+    "relevant_files": ["classical_ir.txt"],
+    "note": "vocabulary mismatch: asks about term statistics without naming TF-IDF or BM25"
+  },
+  {
+    "query": "Finding similar passages by meaning when the author uses different wording",
+    "relevant_files": ["semantic_search.txt"],
+    "note": "vocabulary mismatch: describes semantic matching without saying embeddings or cosine"
+  },
+  {
+    "query": "Stopping a language model from inventing facts by attaching quoted source passages",
+    "relevant_files": ["rag_llm.txt"],
+    "note": "vocabulary mismatch: describes grounding and hallucination without those labels"
+  },
+  {
+    "query": "When should I harvest basil and how do I dry the leaves for winter pesto?",
+    "relevant_files": ["unrelated_topic.txt"],
+    "note": "vocabulary mismatch toward gardening: pesto is not in the source, harvest and drying are"
+  },
+  {
+    "query": "comparing sparse term weighting with dense neural encodings of meaning",
+    "relevant_files": ["classical_ir.txt", "semantic_search.txt"],
+    "note": "vocabulary mismatch spanning two topics: sparse weighting vs dense encodings"
+  },
+  {
+    "query": "Okapi BM25 inverted index postings lists TF-IDF cosine and dense vector embeddings",
+    "relevant_files": ["classical_ir.txt", "semantic_search.txt"],
+    "note": "exact vocabulary match spanning classical sparse retrieval and dense embeddings"
+  },
+  {
+    "query": "Should a smaller candidate set come from the strongest postings per term, or from a slower pairwise model that reorders chunks right before the language model is prompted?",
+    "relevant_files": ["classical_ir.txt", "rag_llm.txt"],
+    "note": "vocabulary mismatch spanning two topics: champion lists vs cross-encoder reranking"
+  },
+  {
+    "query": "What torque specification should I use when replacing a bicycle bottom bracket?",
+    "relevant_files": [],
+    "note": "no relevant document, tests correct low scoring across all methods"
+  }
+]

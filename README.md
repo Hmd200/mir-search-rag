@@ -298,16 +298,85 @@ and web-scraping validation including the SSRF guard.
 
 ## 6. Evaluation
 
-<!--
-  TODO: optional. If added, this section should report P@5 / MRR / nDCG@10
-  (or similar) across TF-IDF, TF-IDF+PRF, BM25, and semantic retrieval on a
-  small hand-labeled query set, with a short discussion of what the numbers
-  show (e.g. where PRF helps, where BM25 and TF-IDF diverge). Not required
-  by the project spec, but strengthens the required VSM/BM25/RAG comparison
-  segment of the demo video.
--->
+A reproducible, offline evaluation lives in `backend/evaluation/` -- a
+held-out four-document corpus, a 12-query hand-labeled gold set
+(`gold_set.json`), and a runner (`run_evaluation.py`) that builds a
+throwaway index in a temp directory (never touching the live database or
+vector store) and scores TF-IDF, TF-IDF+PRF, BM25, and Semantic search
+against it.
 
-*(Not yet completed -- optional addition.)*
+```bash
+cd backend
+python evaluation/run_evaluation.py
+```
+
+This writes a fresh `backend/evaluation/results.md` with the full
+per-query breakdown.
+
+### Aggregate metrics don't discriminate at this scale -- and that's worth saying plainly
+
+With only 4 documents and `top_k=4`, P@4 reduces to `|relevant docs| / 4`
+as soon as every method places *a* relevant document anywhere in the
+result set -- which all four methods do, on almost every query. The
+result is that macro-averaged P@4/MRR/nDCG@4 come out nearly identical
+across all four methods:
+
+| Split | Queries | P@4 | MRR | nDCG@4 |
+|---|---|---|---|---|
+| Exact vocabulary match | 5 | 0.300 (all methods) | 1.000 (all methods) | 1.000 (all methods) |
+| Vocabulary mismatch | 6 | 0.333 (all methods) | 1.000 (all methods) | 1.000 lexical, 0.987 Semantic |
+| No relevant document (true-negative check) | 1 | 0.000 (all methods) | 0.000 (all methods) | 0.000 (all methods) |
+
+This isn't a bug in the metrics or the scoring code -- it's a genuine
+property of evaluating on a 4-document corpus: aggregate precision/recall
+numbers saturate once a corpus is this small, because there's very little
+room for methods to disagree on *whether* a relevant document appears in
+the top-4, only on *where*. A meaningful P@k/nDCG comparison would need a
+much larger, more confusable corpus than fits reasonably in a committed,
+offline evaluation artifact for a course project.
+
+### Where methods actually disagree: per-query ranking order
+
+The real signal at this scale is in the **rank-1 choice** on individual
+queries, not the aggregate table. Two examples from the gold set:
+
+**Query:** *"comparing sparse term weighting with dense neural encodings
+of meaning"* (relevant: `classical_ir.txt`, `semantic_search.txt`)
+
+- TF-IDF and BM25 rank `semantic_search.txt` first (the query's own
+  wording -- "dense," "encodings" -- happens to overlap more with that
+  file's vocabulary than expected).
+- Semantic search ranks `classical_ir.txt` first, better matching the
+  query's underlying *meaning* despite the lexical overlap pointing the
+  other way.
+
+**Query:** *"Should a smaller candidate set come from the strongest
+postings per term, or from a slower pairwise model that reorders chunks
+right before the language model is prompted?"* (relevant:
+`classical_ir.txt`, `rag_llm.txt` -- describing champion lists and
+cross-encoder reranking without using either term)
+
+- TF-IDF and BM25 rank `rag_llm.txt` first.
+- TF-IDF **with PRF enabled** flips the top result to `classical_ir.txt`
+  -- pseudo-relevance feedback pulled in terms from the initially
+  top-ranked chunks that shifted the balance toward the more relevant
+  document. This is a concrete instance of PRF visibly changing a
+  ranking, not just adding expansion-term chips to the UI.
+
+### Honest takeaways
+
+- On queries with strong exact-vocabulary overlap, TF-IDF and BM25 are
+  reliable and fast, exactly as expected.
+- On vocabulary-mismatch queries, semantic search and PRF-expanded TF-IDF
+  are the ones that recover the intended document when the query's
+  wording diverges from the source text's -- visible in the per-query
+  rankings above even though it doesn't move the (saturated) aggregate
+  metrics.
+- The evaluation corpus is intentionally small (four short documents) so
+  it can be committed to the repo and run offline with no external
+  dependencies. A production-scale evaluation would need a much larger,
+  more confusable corpus for P@k and nDCG to be discriminating metrics
+  rather than near-constant ones.
 
 ---
 

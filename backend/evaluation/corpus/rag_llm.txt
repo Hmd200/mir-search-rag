@@ -1,0 +1,36 @@
+Retrieval-augmented generation sits on top of search rather than replacing it.
+A user question is first used to fetch a handful of supporting chunks. Those
+chunks are copied into a prompt template and sent to a large language model,
+which is instructed to answer only from that material and to mark which pieces
+it used. The generation step is what turns ranked passages into a fluent reply.
+Without the retrieved context, the model would answer from parameters trained
+on the public web, which is exactly how unsupported claims appear.
+
+Hallucination is the name for confident statements that are not licensed by
+the evidence. A model can invent a statistic, a citation marker, or even a
+document that was never retrieved. Grounding is the countermeasure: the prompt
+tells the model to stay inside the supplied chunks, to refuse when the chunks
+are insufficient, and to attach citation markers such as [1] that correspond
+to numbered sources in the context. After the completion arrives, a validator
+can strip markers that point past the last provided chunk so that fabricated
+references never reach the user. Citations are not decorative. They are the
+audit trail from a sentence in the answer back to a particular passage.
+
+The quality of the generated reply is bounded by the quality of the retrieved
+set. If the wrong chunks enter the context window, a perfectly obedient model
+will still produce a wrong but well-cited answer. That is why some pipelines
+rerank a larger candidate list with a cross-encoder before prompting: a slower
+pairwise scorer reorders the top results so that the handful of chunks that
+fit in the prompt are the most relevant ones. Query rewriting is another
+optional stage, in which the original question is restated before retrieval.
+Neither trick replaces the need for a corpus that actually contains the answer.
+
+Abstention matters as much as citation. When nothing in the collection supports
+the question, the honest output is to say that the evidence is insufficient
+instead of guessing. Systems that always emit a paragraph train users to trust
+fluent text. Systems that can stop make the remaining answers easier to check.
+In short, retrieval-augmented generation is a contract: search selects the
+evidence, the language model composes a reply, and citation plus validation
+keep that reply tied to real passages. The method fails when retrieval misses,
+when the prompt is too weak to prevent invention, or when citation markers are
+treated as optional garnish rather than as required provenance.

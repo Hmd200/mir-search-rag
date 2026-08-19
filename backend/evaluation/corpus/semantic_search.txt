@@ -1,0 +1,39 @@
+Semantic retrieval encodes text as dense vectors so that conceptually related
+passages can match even when they share few surface words. An embedding model
+reads a chunk and emits a fixed-length array of floating-point numbers, often
+a few hundred dimensions. Nearby points in that space correspond to similar
+meanings. A question about "finding passages by sense rather than wording" can
+therefore land close to a paragraph that never uses those exact tokens. This
+directly attacks vocabulary mismatch, the case where a user and an author
+describe the same idea with different diction.
+
+At index time every chunk is passed through the same encoder. The resulting
+dense vectors are stored in a vector database together with identifiers and
+the original text. At query time the question is encoded with that identical
+model; mixing encoders would place queries and documents on incompatible axes.
+The engine then retrieves the nearest stored vectors. Cosine similarity is the
+usual geometry: after vectors are length-normalized, comparing them reduces to
+a dot product, and a cosine near one means the query and the chunk point in
+almost the same direction. Approximate nearest-neighbor indexes such as HNSW
+make this search practical without scanning every stored vector on each request.
+
+Because the representation is continuous, paraphrases, synonyms, and mild
+rewordings tend to cluster. A passage about "mapping language into numeric
+coordinates" can rank highly for "dense encodings of meaning" even though the
+token overlap is small. That is the opposite of a postings scan, which requires
+the stemmed query term to appear in the dictionary. The tradeoff is opacity.
+A cosine score does not explain which word caused the match, and two unrelated
+chunks can still sit somewhat near each other in a crowded space. Collection
+size, encoder quality, and how text was split all affect whether the nearest
+neighbors are actually on topic.
+
+Local sentence-transformer models are a common student-scale choice. They run
+on CPU, produce normalized embeddings, and keep the pipeline free of paid APIs.
+The same encoder must be used for documents and queries; otherwise cosine
+comparisons are meaningless. Semantic search is not answer generation. It only
+ranks existing chunks. A later generation stage may consume those chunks, but
+the retrieval step itself is a nearest-neighbor lookup over dense vectors.
+When the query is a rare keyword that the encoder under-represents, a lexical
+method that insists on exact term overlap can still win. The two families are
+therefore complementary: one is precise when wording matches, the other is
+robust when wording drifts.

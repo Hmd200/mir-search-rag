@@ -1,0 +1,42 @@
+Classical information retrieval scores a query against a collection by counting
+shared terms rather than by modeling meaning. The central data structure is the
+inverted index. For every distinct term in the vocabulary, the index stores a
+postings list: the identifiers of chunks that contain the term, together with
+the number of times the term occurs in each chunk. Scanning postings is far
+cheaper than reading every document, because most terms appear in only a small
+fraction of the collection. When a query arrives it is tokenized, stop words
+are dropped, and remaining tokens are stemmed so that related word forms collapse
+onto one dictionary key. The engine then looks up each query term, walks its
+postings, and accumulates a score for every candidate chunk.
+
+Two ranking families dominate textbook sparse retrieval. The vector space model
+treats each chunk as a high-dimensional vector whose coordinates are TF-IDF
+weights. Term frequency (TF) grows with how often a term appears inside one
+chunk, usually on a logarithmic scale so that repeating a word ten times does
+not multiply the weight by ten. Inverse document frequency (IDF) down-weights
+terms that occur throughout the collection, because a word that appears almost
+everywhere is a weak discriminator. After both the query and the chunk are
+weighted, cosine similarity compares the two vectors and produces a score in a
+bounded range. Cosine also length-normalizes, so a long chunk that repeats
+common words is not automatically preferred over a short, focused passage.
+
+Okapi BM25 is the standard probabilistic alternative. It still uses document
+frequency to estimate how informative a term is, but it saturates term frequency
+with a parameter k1 so that extra occurrences of an already-frequent term add
+almost nothing. A second parameter, b, length-normalizes against the average
+chunk length: long chunks are penalized if b is close to one, and length is
+ignored if b is zero. Typical classroom defaults are k1 = 1.5 and b = 0.75.
+Because BM25 and TF-IDF both consume the same postings lists, a single inverted
+index can support both scoring functions without rebuilding the dictionary.
+
+Exact scoring of every posting is wasteful on large collections. Champion lists
+keep only the strongest postings for each term and score that reduced candidate
+set first. If the champions do not yield enough results, the engine can fall
+back to the full postings. The point of these inexact top-k tricks is not a
+different ranking philosophy; it is the same TF-IDF or BM25 formula evaluated
+on fewer candidates. The strengths of classical retrieval are speed, inspectable
+term contributions, and reliable behavior when the query and the document share
+the same keywords. The well-known failure mode is vocabulary mismatch: if a user
+asks about "term weighting" and the document only says "TF-IDF", a purely lexical
+engine may miss the connection unless query expansion later injects the missing
+terms.

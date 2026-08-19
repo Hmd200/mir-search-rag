@@ -106,6 +106,205 @@ function sourceElementId(citationNumber: number): string {
   return `rag-source-${citationNumber}`;
 }
 
+function resultDocumentElementId(documentId: string): string {
+  return `search-doc-${documentId}`;
+}
+
+function shortDocumentTitle(title: string, maxLength = 18): string {
+  const trimmed = title.trim() || "Untitled";
+  if (trimmed.length <= maxLength) {
+    return trimmed;
+  }
+  return `${trimmed.slice(0, Math.max(1, maxLength - 1))}…`;
+}
+
+type GraphNode = {
+  documentId: string;
+  title: string;
+  x: number;
+  y: number;
+};
+
+type GraphEdge = {
+  from: string;
+  to: string;
+  weight: number;
+};
+
+function unionMatchedTerms(hits: DisplayHit[]): Set<string> {
+  const terms = new Set<string>();
+  for (const hit of hits) {
+    for (const term of hit.matched_terms ?? []) {
+      if (term) {
+        terms.add(term);
+      }
+    }
+  }
+  return terms;
+}
+
+function sharedTermCount(left: Set<string>, right: Set<string>): number {
+  let count = 0;
+  for (const term of left) {
+    if (right.has(term)) {
+      count += 1;
+    }
+  }
+  return count;
+}
+
+function documentScore(hits: DisplayHit[]): number {
+  return Math.max(...hits.map((hit) => hit.score), 0);
+}
+
+function buildDocumentRelationGraph(
+  hits: DisplayHit[],
+  mode: "lexical" | "semantic",
+): { nodes: GraphNode[]; edges: GraphEdge[] } {
+  const byDocument = new Map<string, DisplayHit[]>();
+  for (const hit of hits) {
+    const group = byDocument.get(hit.document_id) ?? [];
+    group.push(hit);
+    byDocument.set(hit.document_id, group);
+  }
+
+  const documents = [...byDocument.entries()];
+  const width = 480;
+  const height = 280;
+  const centerX = width / 2;
+  const centerY = height / 2;
+  const radius = documents.length <= 2 ? 80 : 96;
+  const nodes: GraphNode[] = documents.map(([documentId, group], index) => {
+    const angle =
+      (2 * Math.PI * index) / documents.length - Math.PI / 2;
+    return {
+      documentId,
+      title: group[0]?.document_title ?? documentId,
+      x: centerX + radius * Math.cos(angle),
+      y: centerY + radius * Math.sin(angle),
+    };
+  });
+
+  const edges: GraphEdge[] = [];
+  for (let i = 0; i < documents.length; i += 1) {
+    for (let j = i + 1; j < documents.length; j += 1) {
+      const [leftId, leftHits] = documents[i];
+      const [rightId, rightHits] = documents[j];
+      let weight = 0;
+      if (mode === "lexical") {
+        // TF-IDF/BM25: edge weight is |matched_terms ∩ matched_terms|
+        // across all chunks of each document in this result set.
+        weight = sharedTermCount(
+          unionMatchedTerms(leftHits),
+          unionMatchedTerms(rightHits),
+        );
+      } else {
+        // Semantic responses have no matched_terms. Use score proximity:
+        // 1 / (1 + |score_a - score_b|), with each document scored as its
+        // best (max) chunk. Closer cosine scores => thicker edges. Title
+        // overlap is unused because titles need not share tokens.
+        const delta = Math.abs(
+          documentScore(leftHits) - documentScore(rightHits),
+        );
+        weight = 1 / (1 + delta);
+      }
+      if (weight > 0) {
+        edges.push({ from: leftId, to: rightId, weight });
+      }
+    }
+  }
+
+  return { nodes, edges };
+}
+
+function DocumentRelationGraph({
+  hits,
+  mode,
+}: {
+  hits: DisplayHit[];
+  mode: "lexical" | "semantic";
+}) {
+  const { nodes, edges } = buildDocumentRelationGraph(hits, mode);
+  if (nodes.length < 2) {
+    return null;
+  }
+
+  const nodeById = new Map(nodes.map((node) => [node.documentId, node]));
+  const maxWeight = Math.max(...edges.map((edge) => edge.weight), Number.EPSILON);
+
+  function jumpToDocument(documentId: string) {
+    document.getElementById(resultDocumentElementId(documentId))?.scrollIntoView({
+      behavior: "smooth",
+      block: "center",
+    });
+  }
+
+  const caption =
+    mode === "lexical"
+      ? "Edges connect documents sharing matched terms; thicker = more overlap."
+      : "Edges connect documents whose retrieval scores are close; thicker = closer scores.";
+
+  return (
+    <section className="rounded-2xl border border-rule bg-card p-4 sm:p-5">
+      <h3 className="font-display text-xl text-ink">Document relations</h3>
+      <svg
+        viewBox="0 0 480 280"
+        className="mt-3 h-auto w-full text-burgundy"
+        role="img"
+        aria-label="Document relation graph for the current search results"
+      >
+        {edges.map((edge) => {
+          const from = nodeById.get(edge.from);
+          const to = nodeById.get(edge.to);
+          if (!from || !to) {
+            return null;
+          }
+          const strength = edge.weight / maxWeight;
+          return (
+            <line
+              key={`${edge.from}-${edge.to}`}
+              x1={from.x}
+              y1={from.y}
+              x2={to.x}
+              y2={to.y}
+              className="stroke-burgundy"
+              strokeWidth={1 + strength * 4}
+              strokeOpacity={0.25 + strength * 0.7}
+            />
+          );
+        })}
+        {nodes.map((node) => (
+          <g
+            key={node.documentId}
+            transform={`translate(${node.x} ${node.y})`}
+            className="cursor-pointer"
+            role="button"
+            tabIndex={0}
+            aria-label={`Jump to ${node.title}`}
+            onClick={() => jumpToDocument(node.documentId)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" || event.key === " ") {
+                event.preventDefault();
+                jumpToDocument(node.documentId);
+              }
+            }}
+          >
+            <circle r={14} className="fill-burgundy" />
+            <text
+              y={32}
+              textAnchor="middle"
+              className="fill-ink font-display text-[11px]"
+            >
+              {shortDocumentTitle(node.title)}
+            </text>
+          </g>
+        ))}
+      </svg>
+      <p className="mt-2 text-sm text-ink-soft">{caption}</p>
+    </section>
+  );
+}
+
 function contributionIntensityClass(normalized: number): string {
   if (normalized >= 0.75) {
     return "bg-burgundy/60";
@@ -731,9 +930,30 @@ export function SearchPage() {
               Highlight intensity = term's contribution to the score
             </p>
           ) : null}
-          {hits.map((hit) => (
-            <ResultCard key={hit.chunk_id} hit={hit} />
-          ))}
+          {hits.map((hit, index) => {
+            const firstOfDocument =
+              hits.findIndex((item) => item.document_id === hit.document_id) ===
+              index;
+            return (
+              <div
+                key={hit.chunk_id}
+                id={
+                  firstOfDocument
+                    ? resultDocumentElementId(hit.document_id)
+                    : undefined
+                }
+                className="scroll-mt-24"
+              >
+                <ResultCard hit={hit} />
+              </div>
+            );
+          })}
+          {new Set(hits.map((hit) => hit.document_id)).size >= 2 ? (
+            <DocumentRelationGraph
+              hits={hits}
+              mode={algorithm === "semantic" ? "semantic" : "lexical"}
+            />
+          ) : null}
         </div>
       ) : null}
 
