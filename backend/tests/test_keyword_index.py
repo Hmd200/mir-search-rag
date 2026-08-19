@@ -80,24 +80,12 @@ def test_upsert_replaces_old_document_postings(tmp_path: Path) -> None:
     assert index.stats().chunk_count == 1
 
 
-@pytest.mark.parametrize(
-    ("top_k", "candidate_limit"),
-    [(0, 10), (10, 0)],
-)
-def test_invalid_search_limits_are_rejected(
-    tmp_path: Path,
-    top_k: int,
-    candidate_limit: int,
-) -> None:
+def test_invalid_search_limits_are_rejected(tmp_path: Path) -> None:
     index = KeywordIndex(tmp_path / "limits.json")
     index.upsert_document("document", [("chunk", "retrieval")])
 
     with pytest.raises(ValueError):
-        index.search(
-            "retrieval",
-            top_k=top_k,
-            candidate_limit=candidate_limit,
-        )
+        index.search("retrieval", top_k=0)
 
 
 def test_bm25_prefers_rare_terms_and_reports_contributions(
@@ -172,7 +160,7 @@ def test_bm25_top_k_order_is_deterministic(tmp_path: Path) -> None:
         ],
     )
 
-    hits = index.search_bm25("signal", top_k=1, candidate_limit=1)
+    hits = index.search_bm25("signal", top_k=1)
 
     assert [hit.chunk_id for hit in hits] == ["chunk-a"]
 

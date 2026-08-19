@@ -770,11 +770,10 @@ class KeywordIndex:
 
         return len(approximate_ids & exact_ids) / denominator
 
-    @staticmethod
     def _build_diagnostics(
+        self,
         *,
         retrieval_mode: RetrievalMode,
-        champion_size: int,
         selection: _CandidateSelection,
         overlap: float | None,
         latency_ms: float,
@@ -790,7 +789,9 @@ class KeywordIndex:
 
         return KeywordSearchDiagnostics(
             retrieval_mode=retrieval_mode,
-            champion_size=(champion_size if retrieval_mode == "champion" else None),
+            champion_size=(
+                self._champion_size if retrieval_mode == "champion" else None
+            ),
             total_postings_available=(selection.total_postings),
             postings_visited=(selection.postings_visited),
             candidate_count=len(selection.chunk_ids),
@@ -807,7 +808,6 @@ class KeywordIndex:
         *,
         top_k: int = 10,
         retrieval_mode: RetrievalMode = "champion",
-        champion_size: int | None = None,
         fallback: bool = True,
         compare_exact: bool = False,
         use_champions: bool = True,
@@ -816,8 +816,6 @@ class KeywordIndex:
 
         if not use_champions:
             retrieval_mode = "exact"
-        if champion_size is not None and champion_size < 1:
-            raise ValueError("champion_size must be greater than zero.")
 
         self._validate_search_options(
             top_k=top_k,
@@ -871,7 +869,6 @@ class KeywordIndex:
 
         diagnostics = self._build_diagnostics(
             retrieval_mode=retrieval_mode,
-            champion_size=self._champion_size,
             selection=selection,
             overlap=overlap,
             latency_ms=latency_ms,
@@ -887,26 +884,18 @@ class KeywordIndex:
         *,
         top_k: int = 10,
         use_champions: bool = True,
-        champion_size: int | None = None,
         retrieval_mode: RetrievalMode = "champion",
         fallback: bool = True,
-        candidate_limit: int | None = None,
     ) -> list[KeywordSearchHit]:
         """Return TF-IDF hits using champion or exact retrieval.
 
-        candidate_limit remains temporarily supported as a legacy alias
-        for champion_size validation. Retrieval always uses the
-        constructor champion_size.
+        Champion lists always use the constructor champion_size.
         """
-
-        if candidate_limit is not None and candidate_limit < 1:
-            raise ValueError("champion_size must be greater than zero.")
 
         outcome = self.search_detailed(
             query,
             top_k=top_k,
             retrieval_mode=retrieval_mode,
-            champion_size=champion_size,
             fallback=fallback,
             use_champions=use_champions,
         )
@@ -918,7 +907,6 @@ class KeywordIndex:
         *,
         top_k: int = 10,
         retrieval_mode: RetrievalMode = "champion",
-        champion_size: int | None = None,
         fallback: bool = True,
         compare_exact: bool = False,
         use_champions: bool = True,
@@ -929,8 +917,6 @@ class KeywordIndex:
 
         if not use_champions:
             retrieval_mode = "exact"
-        if champion_size is not None and champion_size < 1:
-            raise ValueError("champion_size must be greater than zero.")
 
         self._validate_search_options(
             top_k=top_k,
@@ -993,7 +979,6 @@ class KeywordIndex:
 
         diagnostics = self._build_diagnostics(
             retrieval_mode=retrieval_mode,
-            champion_size=self._champion_size,
             selection=selection,
             overlap=overlap,
             latency_ms=latency_ms,
@@ -1009,28 +994,20 @@ class KeywordIndex:
         *,
         top_k: int = 10,
         use_champions: bool = True,
-        champion_size: int | None = None,
         retrieval_mode: RetrievalMode = "champion",
         fallback: bool = True,
-        candidate_limit: int | None = None,
         k1: float = 1.5,
         b: float = 0.75,
     ) -> list[KeywordSearchHit]:
         """Return BM25 hits using champion or exact retrieval.
 
-        candidate_limit remains temporarily supported as a legacy alias
-        for champion_size validation. Retrieval always uses the
-        constructor champion_size.
+        Champion lists always use the constructor champion_size.
         """
-
-        if candidate_limit is not None and candidate_limit < 1:
-            raise ValueError("champion_size must be greater than zero.")
 
         outcome = self.search_bm25_detailed(
             query,
             top_k=top_k,
             retrieval_mode=retrieval_mode,
-            champion_size=champion_size,
             fallback=fallback,
             use_champions=use_champions,
             k1=k1,
@@ -1115,10 +1092,8 @@ class KeywordIndex:
         beta: float = 0.75,
         scoring_mode: ScoringMode = "tfidf",
         use_champions: bool = True,
-        champion_size: int | None = None,
         retrieval_mode: RetrievalMode = "champion",
         fallback: bool = True,
-        candidate_limit: int | None = None,
         k1: float = 1.5,
         b: float = 0.75,
     ) -> KeywordPrfSearchOutcome:
@@ -1169,20 +1144,16 @@ class KeywordIndex:
                 query,
                 top_k=feedback_docs,
                 use_champions=use_champions,
-                champion_size=champion_size,
                 retrieval_mode=retrieval_mode,
                 fallback=fallback,
-                candidate_limit=candidate_limit,
             )
         else:
             first_hits = self.search_bm25(
                 query,
                 top_k=feedback_docs,
                 use_champions=use_champions,
-                champion_size=champion_size,
                 retrieval_mode=retrieval_mode,
                 fallback=fallback,
-                candidate_limit=candidate_limit,
                 k1=k1,
                 b=b,
             )

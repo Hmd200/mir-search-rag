@@ -66,7 +66,7 @@ vector side -- always consistent with the current corpus.
 
 | Method | What it does |
 |---|---|
-| **TF-IDF (VSM)** | Cosine similarity over log-scaled TF-IDF vectors (`ltc.lnc` weighting). Query expansion via Rocchio pseudo-relevance feedback is available as a toggle. |
+| **TF-IDF (VSM)** | Cosine similarity over log-scaled TF-IDF vectors. Both query and document term weights use `(1 + log(tf)) × idf` (SMART `ltc.ltc` weighting — IDF is applied on both sides, not just the query side), normalized by cosine length. Query expansion via Rocchio pseudo-relevance feedback is available as a toggle. |
 | **BM25** | Okapi BM25 with tunable `k1` (default 1.5) and `b` (default 0.75), using the Lucene IDF variant (`ln(1 + (N-df+0.5)/(df+0.5))`) to avoid the negative-weight edge case of the classical Robertson-Sparck Jones formula for very common terms. |
 | **Semantic** | Dense vector cosine similarity via ChromaDB, using the same embedding model for documents and queries. |
 | **RAG** | Semantic retrieval -> optional cross-encoder reranking -> prompt construction with numbered `[1]...[N]` source chunks -> local LLM generation -> citation validation (fabricated citation markers are detected and stripped) -> answer with linked sources. |
@@ -82,7 +82,10 @@ term's champion list doesn't yield enough candidates.
 Documents are split into overlapping word windows of **500 words with a
 75-word overlap** (the project spec's 500/50 is given as an example, not a
 requirement -- 75 was chosen to preserve more context across the overlap
-for this corpus size). Windows snap to sentence boundaries where possible.
+for this corpus size). Windows snap to token (word) boundaries, not
+sentence boundaries -- the spec asks for "logical, overlapping chunks"
+without mandating sentence-aware splitting, and a word-window approach was
+chosen for its simplicity and predictable, testable offsets.
 
 Chunks are allowed to span page boundaries -- a chunk records both a
 `page_start` and `page_end` (equal when the chunk stays on one page). This

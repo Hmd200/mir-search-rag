@@ -113,7 +113,6 @@ class KeywordSearchService:
                 alpha=alpha,
                 beta=beta,
                 scoring_mode="tfidf",
-                candidate_limit=max(retrieve_k, candidate_limit),
             )
             records = self._hydrate(list(prf.hits))
             expansion = prf.expansion
@@ -121,7 +120,6 @@ class KeywordSearchService:
             hits = self.keyword_index.search(
                 query,
                 top_k=retrieve_k,
-                candidate_limit=max(retrieve_k, candidate_limit),
             )
             records = self._hydrate(hits)
             expansion = None
@@ -173,7 +171,6 @@ class KeywordSearchService:
                 alpha=alpha,
                 beta=beta,
                 scoring_mode="bm25",
-                candidate_limit=max(retrieve_k, candidate_limit),
                 k1=k1,
                 b=b,
             )
@@ -183,7 +180,6 @@ class KeywordSearchService:
             hits = self.keyword_index.search_bm25(
                 query,
                 top_k=retrieve_k,
-                candidate_limit=max(retrieve_k, candidate_limit),
                 k1=k1,
                 b=b,
             )
