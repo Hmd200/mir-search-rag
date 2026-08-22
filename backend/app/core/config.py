@@ -52,7 +52,7 @@ class Settings(BaseSettings):
     ollama_model: str = "qwen3:8b"
     llm_provider: str = "ollama"
     gemini_api_key: str = ""
-    gemini_model: str = "gemini-2.0-flash"
+    gemini_model: str = "gemini-2.5-flash"
     gemini_api_base: str = "https://generativelanguage.googleapis.com/v1beta"
 
     prf_feedback_docs: int = 5

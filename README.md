@@ -203,7 +203,7 @@ MIR_GEMINI_API_KEY=your_key_here
 ```
 
 3. Restart the API. In the Search UI, select RAG → **Gemini (API)**.
-4. Optional: `MIR_GEMINI_MODEL` (default `gemini-2.0-flash`).
+4. Optional: `MIR_GEMINI_MODEL` (default `gemini-2.5-flash`).
 
 Do not commit `.env`. Embedding and reranker weights (`sentence-transformers/all-MiniLM-L6-v2`, `cross-encoder/ms-marco-MiniLM-L-6-v2`) download from Hugging Face on first API start. Those models are public; no Hugging Face token is required.
 
@@ -220,7 +220,7 @@ All optional. `.env` is loaded from the **repository root**.
 | `MIR_OLLAMA_MODEL` | `qwen3:8b` | RAG generation model (Ollama) |
 | `MIR_LLM_PROVIDER` | `ollama` | Default generator if the UI omits a choice |
 | `MIR_GEMINI_API_KEY` | empty | Required only for the Gemini RAG option |
-| `MIR_GEMINI_MODEL` | `gemini-2.0-flash` | Gemini model id |
+| `MIR_GEMINI_MODEL` | `gemini-2.5-flash` | Gemini model id |
 | `MIR_MAX_UPLOAD_SIZE_MB` | `25` | Upload cap |
 | `MIR_CHUNK_SIZE` | `500` | Words per chunk |
 | `MIR_CHUNK_OVERLAP` | `75` | Overlap in words |
@@ -293,7 +293,7 @@ That is the scale at which PRF and semantic search are visible here. A larger, m
 - **Older uploads** indexed before page-spanning chunks keep the old one-page-per-chunk split until re-uploaded.
 - **LLM:** Ollama is default; Gemini needs `MIR_GEMINI_API_KEY`. Retrieval is unchanged.
 - **RAG grounding:** Successful answers go through a same-model grounding rewrite; every accepted factual sentence must end with an in-range citation, and verifier failure abstains. Same-model verification is best-effort and is not a formal entailment guarantee—hallucinations remain possible. Grounding verification adds one LLM call to successful RAG generation.
-- **RAG can false-abstain on strong vocabulary mismatch.** The relevance gate looks only at dense cosine similarity against a single threshold (`MIR_RAG_MIN_RETRIEVAL_SCORE`). If a query's wording is far enough from the source chunk's wording (e.g. "colour" vs. a chunk that only says "navy"), the correct chunk can retrieve with a low score, fail the gate, and abstain even though the fact is in the corpus and BM25 would have found it easily. This is a known dense-retrieval weakness, not a bug in the gate itself. Hybrid (BM25 + dense) retrieval is the standard fix but is not currently wired into the RAG route.
+- **RAG can false-abstain on strong vocabulary mismatch.** The relevance gate is not dense-score-only: it also has an exact-term lexical bypass that skips the `MIR_RAG_MIN_RETRIEVAL_SCORE` threshold when one retrieved chunk literally contains every meaningful query term. But that bypass only fires on verbatim overlap, so it doesn't help when the query's wording differs from the source's (e.g. querying "colour" when the chunk only says "navy"). In that case dense cosine similarity is the only remaining signal, and if it's weak the query abstains even though the fact is in the corpus and BM25 would have found it easily. This is a known dense-retrieval weakness, not a bug in the gate itself. Hybrid (BM25 + dense) retrieval is the standard fix but is not currently wired into the RAG route.
 - **Demo video** is the remaining submission item (section 10).
 
 ---

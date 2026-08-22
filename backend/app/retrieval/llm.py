@@ -96,7 +96,7 @@ class GeminiClient:
         timeout: float = 120.0,
     ) -> None:
         self._api_key = settings.gemini_api_key.strip()
-        self._model = settings.gemini_model.strip() or "gemini-2.0-flash"
+        self._model = settings.gemini_model.strip() or "gemini-2.5-flash"
         self._base_url = settings.gemini_api_base.rstrip("/")
         self._timeout = timeout
 
