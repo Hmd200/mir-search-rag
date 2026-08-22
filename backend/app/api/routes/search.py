@@ -64,7 +64,6 @@ def keyword_search(
     keyword_index: Annotated[KeywordIndex, Depends(get_keyword_index)],
     settings: Annotated[Settings, Depends(get_settings)],
     top_k: Annotated[int, Query(ge=1, le=50)] = 10,
-    candidate_limit: Annotated[int, Query(ge=1, le=5000)] = 200,
     use_prf: Annotated[bool, Query()] = False,
     feedback_docs: Annotated[int | None, Query(ge=1, le=50)] = None,
     max_expansion_terms: Annotated[int | None, Query(ge=0, le=100)] = None,
@@ -73,7 +72,7 @@ def keyword_search(
     beta: Annotated[float | None, Query()] = None,
     use_reranker: Annotated[bool | None, Query()] = None,
 ) -> KeywordSearchResponse:
-    """Search indexed chunks using inexact top-K and TF-IDF cosine ranking."""
+    """Search with champion-list inexact top-K and TF-IDF cosine ranking."""
 
     started = perf_counter()
     resolved_expansion = (
@@ -85,7 +84,6 @@ def keyword_search(
     outcome = KeywordSearchService(session, keyword_index).search(
         query,
         top_k=top_k,
-        candidate_limit=candidate_limit,
         use_prf=use_prf,
         feedback_docs=(
             feedback_docs if feedback_docs is not None else settings.prf_feedback_docs
@@ -118,7 +116,6 @@ def bm25_search(
     keyword_index: Annotated[KeywordIndex, Depends(get_keyword_index)],
     settings: Annotated[Settings, Depends(get_settings)],
     top_k: Annotated[int, Query(ge=1, le=50)] = 10,
-    candidate_limit: Annotated[int, Query(ge=1, le=5000)] = 200,
     k1: Annotated[float, Query(gt=0.0, le=10.0)] = 1.5,
     b: Annotated[float, Query(ge=0.0, le=1.0)] = 0.75,
     use_prf: Annotated[bool, Query()] = False,
@@ -141,7 +138,6 @@ def bm25_search(
     outcome = KeywordSearchService(session, keyword_index).search_bm25(
         query,
         top_k=top_k,
-        candidate_limit=candidate_limit,
         k1=k1,
         b=b,
         use_prf=use_prf,

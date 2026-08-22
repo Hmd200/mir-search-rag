@@ -260,3 +260,292 @@ def test_uploaded_document_is_searchable_and_removed_from_index(
         params={"q": "cosine retrieval"},
     )
     assert semantic_after_delete.json()["results"] == []
+
+
+class _RecordingKeywordIndex:
+    def __init__(self, *, fail_upsert: bool = False) -> None:
+        self.fail_upsert = fail_upsert
+        self.delete_calls: list[str] = []
+        self.upsert_calls: list[str] = []
+
+    def delete_document(self, document_id: str) -> bool:
+        self.delete_calls.append(document_id)
+        return True
+
+    def upsert_document(self, document_id: str, chunks) -> None:
+        self.upsert_calls.append(document_id)
+        if self.fail_upsert:
+            raise RuntimeError("keyword restore failed")
+        list(chunks)
+
+
+class _RecordingVectorStore:
+    def __init__(self, *, fail_upsert: bool = False) -> None:
+        self.fail_upsert = fail_upsert
+        self.delete_calls: list[str] = []
+        self.upsert_calls: list[str] = []
+
+    def delete_document(self, document_id: str) -> bool:
+        self.delete_calls.append(document_id)
+        return True
+
+    def upsert_document(self, document_id: str, chunks, embeddings) -> None:
+        del embeddings
+        self.upsert_calls.append(document_id)
+        if self.fail_upsert:
+            raise RuntimeError("vector restore failed")
+        list(chunks)
+
+
+@dataclass
+class _DeleteHarness:
+    service: "DocumentService"
+    session: Session
+    settings: Settings
+    keyword_index: _RecordingKeywordIndex
+    vector_store: _RecordingVectorStore
+    document_id: str
+    source_path: Path
+
+
+@pytest.fixture
+def delete_harness(tmp_path: Path) -> Iterator[_DeleteHarness]:
+    from app.services.documents import DocumentService
+
+    database_path = tmp_path / "delete.db"
+    engine = create_database_engine(f"sqlite:///{database_path.as_posix()}")
+    Base.metadata.create_all(engine)
+    session_factory = sessionmaker(
+        bind=engine,
+        autoflush=False,
+        expire_on_commit=False,
+    )
+    settings = Settings(
+        data_dir=tmp_path,
+        upload_dir=tmp_path / "uploads",
+        index_dir=tmp_path / "indexes",
+        chroma_dir=tmp_path / "chroma",
+        database_dir=tmp_path / "database",
+        database_url=f"sqlite:///{database_path.as_posix()}",
+    )
+    settings.ensure_data_directories()
+
+    document_id = "doc-delete-1"
+    stored_filename = f"{document_id}.pdf"
+    source_path = settings.upload_dir / stored_filename
+    source_path.write_bytes(b"%PDF-1.4 test")
+
+    keyword_index = _RecordingKeywordIndex()
+    vector_store = _RecordingVectorStore()
+    session = session_factory()
+    document = Document(
+        id=document_id,
+        title="Delete Target",
+        original_filename="delete-target.pdf",
+        stored_filename=stored_filename,
+        source_type="upload",
+        mime_type="application/pdf",
+        file_size_bytes=source_path.stat().st_size,
+        status="indexed",
+        chunk_count=1,
+        keyword_indexed=True,
+        vector_indexed=True,
+    )
+    document.chunks = [
+        Chunk(
+            id="chunk-1",
+            position=0,
+            text="Rollback restoration coverage for document deletion.",
+            token_count=6,
+            page_start=1,
+            page_end=1,
+            char_start=0,
+            char_end=52,
+        )
+    ]
+    session.add(document)
+    session.commit()
+
+    service = DocumentService(
+        session,
+        settings,
+        keyword_index,
+        vector_store,
+        DeterministicTestEmbedder(),
+    )
+    yield _DeleteHarness(
+        service,
+        session,
+        settings,
+        keyword_index,
+        vector_store,
+        document_id,
+        source_path,
+    )
+    session.close()
+    engine.dispose()
+
+
+def _fail_commit(monkeypatch: pytest.MonkeyPatch, harness: _DeleteHarness) -> None:
+    from sqlalchemy.exc import SQLAlchemyError
+
+    def boom() -> None:
+        raise SQLAlchemyError("commit failed")
+
+    monkeypatch.setattr(harness.session, "commit", boom)
+
+
+def test_keyword_restore_failure_still_attempts_vector_and_file(
+    delete_harness: _DeleteHarness,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.services.documents import DocumentServiceError
+
+    delete_harness.keyword_index.fail_upsert = True
+    _fail_commit(monkeypatch, delete_harness)
+
+    with pytest.raises(DocumentServiceError) as raised:
+        delete_harness.service.delete_document(delete_harness.document_id)
+
+    assert delete_harness.keyword_index.upsert_calls == [delete_harness.document_id]
+    assert delete_harness.vector_store.upsert_calls == [delete_harness.document_id]
+    assert delete_harness.source_path.exists()
+    assert str(raised.value) == (
+        "Could not delete the document; rollback was incomplete: "
+        "keyword-index restoration"
+    )
+    assert isinstance(raised.value.__cause__, Exception)
+
+
+def test_vector_restore_failure_still_attempts_keyword_and_file(
+    delete_harness: _DeleteHarness,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.services.documents import DocumentServiceError
+
+    delete_harness.vector_store.fail_upsert = True
+    _fail_commit(monkeypatch, delete_harness)
+
+    with pytest.raises(DocumentServiceError) as raised:
+        delete_harness.service.delete_document(delete_harness.document_id)
+
+    assert delete_harness.keyword_index.upsert_calls == [delete_harness.document_id]
+    assert delete_harness.vector_store.upsert_calls == [delete_harness.document_id]
+    assert delete_harness.source_path.exists()
+    assert str(raised.value) == (
+        "Could not delete the document; rollback was incomplete: "
+        "vector-index restoration"
+    )
+
+
+def test_source_file_restore_failure_reports_only_file_step(
+    delete_harness: _DeleteHarness,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.services.documents import DocumentService, DocumentServiceError
+
+    _fail_commit(monkeypatch, delete_harness)
+
+    def boom(tombstone_path: Path, source_path: Path) -> None:
+        del tombstone_path, source_path
+        raise OSError("source restore failed")
+
+    monkeypatch.setattr(DocumentService, "_restore_tombstoned_source", staticmethod(boom))
+
+    with pytest.raises(DocumentServiceError) as raised:
+        delete_harness.service.delete_document(delete_harness.document_id)
+
+    assert delete_harness.keyword_index.upsert_calls == [delete_harness.document_id]
+    assert delete_harness.vector_store.upsert_calls == [delete_harness.document_id]
+    assert str(raised.value) == (
+        "Could not delete the document; rollback was incomplete: "
+        "source-file restoration"
+    )
+
+
+def test_keyword_only_removal_skips_vector_restoration(
+    delete_harness: _DeleteHarness,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.services.documents import DocumentServiceError
+
+    document = delete_harness.session.get(Document, delete_harness.document_id)
+    assert document is not None
+    document.vector_indexed = False
+    delete_harness.session.commit()
+    _fail_commit(monkeypatch, delete_harness)
+
+    with pytest.raises(DocumentServiceError) as raised:
+        delete_harness.service.delete_document(delete_harness.document_id)
+
+    assert delete_harness.keyword_index.delete_calls == [delete_harness.document_id]
+    assert delete_harness.vector_store.delete_calls == []
+    assert delete_harness.keyword_index.upsert_calls == [delete_harness.document_id]
+    assert delete_harness.vector_store.upsert_calls == []
+    assert delete_harness.source_path.exists()
+    assert str(raised.value) == "Could not delete the document."
+
+
+def test_database_rollback_failure_still_restores_indexes_and_file(
+    delete_harness: _DeleteHarness,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.services.documents import DocumentServiceError
+    from sqlalchemy.exc import SQLAlchemyError
+
+    _fail_commit(monkeypatch, delete_harness)
+
+    def boom() -> None:
+        raise SQLAlchemyError("rollback failed")
+
+    monkeypatch.setattr(delete_harness.session, "rollback", boom)
+
+    with pytest.raises(DocumentServiceError) as raised:
+        delete_harness.service.delete_document(delete_harness.document_id)
+
+    assert delete_harness.keyword_index.upsert_calls == [delete_harness.document_id]
+    assert delete_harness.vector_store.upsert_calls == [delete_harness.document_id]
+    assert delete_harness.source_path.exists()
+    assert str(raised.value) == (
+        "Could not delete the document; rollback was incomplete: "
+        "database rollback"
+    )
+
+
+def test_multiple_rollback_failures_preserve_label_order(
+    delete_harness: _DeleteHarness,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.services.documents import DocumentService, DocumentServiceError
+    from sqlalchemy.exc import SQLAlchemyError
+
+    delete_harness.keyword_index.fail_upsert = True
+    delete_harness.vector_store.fail_upsert = True
+    _fail_commit(monkeypatch, delete_harness)
+
+    def rollback_boom() -> None:
+        raise SQLAlchemyError("rollback failed")
+
+    monkeypatch.setattr(delete_harness.session, "rollback", rollback_boom)
+
+    def file_boom(tombstone_path: Path, source_path: Path) -> None:
+        del tombstone_path, source_path
+        raise OSError("source restore failed")
+
+    monkeypatch.setattr(
+        DocumentService,
+        "_restore_tombstoned_source",
+        staticmethod(file_boom),
+    )
+
+    with pytest.raises(DocumentServiceError) as raised:
+        delete_harness.service.delete_document(delete_harness.document_id)
+
+    assert str(raised.value) == (
+        "Could not delete the document; rollback was incomplete: "
+        "database rollback, keyword-index restoration, "
+        "vector-index restoration, source-file restoration"
+    )
+    assert isinstance(raised.value.__cause__, SQLAlchemyError)
+    assert "rollback failed" not in str(raised.value.__cause__)
+    assert "commit failed" in str(raised.value.__cause__)

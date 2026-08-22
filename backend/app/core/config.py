@@ -3,6 +3,7 @@
 from functools import lru_cache
 from pathlib import Path
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
@@ -50,14 +51,17 @@ class Settings(BaseSettings):
     ollama_base_url: str = "http://127.0.0.1:11434"
     ollama_model: str = "qwen3:8b"
     llm_provider: str = "ollama"
+    gemini_api_key: str = ""
+    gemini_model: str = "gemini-2.0-flash"
+    gemini_api_base: str = "https://generativelanguage.googleapis.com/v1beta"
 
     prf_feedback_docs: int = 5
     prf_max_expansion_terms: int = 10
-    prf_expansion_terms: int = 10
     prf_alpha: float = 1.0
     prf_beta: float = 0.75
     rerank_model_name: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
     rerank_enabled_default: bool = False
+    rag_min_retrieval_score: float = Field(default=0.30, ge=0.0, le=1.0)
 
     max_upload_size_mb: int = 25
     chunk_size: int = 500

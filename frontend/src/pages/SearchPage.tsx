@@ -10,6 +10,7 @@ import {
   searchSemantic,
 } from "../api/client";
 import type {
+  AbstentionReason,
   KeywordSearchResult,
   PrfExpansion,
   RagCitedChunk,
@@ -22,6 +23,7 @@ import { TermContributionChart } from "../components/TermContributionChart";
 import { formatLatency, formatScore } from "../lib/format";
 
 type Algorithm = "tfidf" | "bm25" | "semantic" | "rag";
+type LlmProvider = "ollama" | "gemini";
 
 type DisplayHit = {
   chunk_id: string;
@@ -36,7 +38,7 @@ type DisplayHit = {
   term_contributions?: Record<string, number>;
 };
 
-const CITATION_MARKER = /\[(\d+)\]/g;
+const CITATION_MARKER = /\[n?(\d+)\]/g;
 
 function formatPageRange(
   pageStart: number | null,
@@ -80,10 +82,30 @@ function toSemanticHits(results: SemanticSearchResult[]): DisplayHit[] {
 }
 
 function formatRagError(error: unknown): string {
+  if (error instanceof ApiError && error.status === 400) {
+    return error.message;
+  }
   if (error instanceof ApiError && error.status === 503) {
-    return "The language model is unavailable. Start Ollama and try again.";
+    return "The language model is unavailable. For Ollama, start the local server. For Gemini, check MIR_GEMINI_API_KEY.";
   }
   return formatApiError(error);
+}
+
+function abstentionMessage(reason: AbstentionReason | null): string {
+  switch (reason) {
+    case "no_context":
+      return "No searchable context was found.";
+    case "low_relevance":
+      return "Retrieved passages were not relevant enough.";
+    case "model_abstained":
+      return "The generator could not find a supported answer.";
+    case "citation_failure":
+      return "The system could not produce an answer with valid sentence-level citations.";
+    case "grounding_failure":
+      return "The answer could not be verified against the retrieved passages.";
+    default:
+      return "The retrieved chunks do not contain enough information to answer this question.";
+  }
 }
 
 function uniqueCitationNumbers(answer: string): number[] {
@@ -635,14 +657,16 @@ function CitedChunkCard({
   citationNumber,
   chunk,
   highlighted,
+  assignAnchor = true,
 }: {
   citationNumber: number;
   chunk: RagCitedChunk;
   highlighted: boolean;
+  assignAnchor?: boolean;
 }) {
   return (
     <article
-      id={sourceElementId(citationNumber)}
+      id={assignAnchor ? sourceElementId(citationNumber) : undefined}
       className={[
         "scroll-mt-24 rounded-2xl border bg-card p-4 sm:p-5",
         highlighted ? "border-burgundy ring-2 ring-burgundy/30" : "border-rule",
@@ -694,17 +718,26 @@ function RagResults({
           </span>
         </p>
       ) : null}
+      <p className="text-sm text-ink-soft">
+        Generated with{" "}
+        {result.llm_provider === "gemini" ? "Gemini" : "Ollama"}
+      </p>
       {result.abstained ? (
         <div className="rounded-2xl border border-rule bg-card px-6 py-12 text-center">
           <p className="font-display text-2xl">Not enough evidence in the corpus</p>
           <p className="mt-2 text-sm text-ink-soft">
-            The retrieved chunks do not contain enough information to answer
-            this question.
+            {abstentionMessage(result.abstention_reason)}
           </p>
         </div>
       ) : (
         <section className="rounded-2xl border border-rule bg-card p-5 sm:p-6">
           <h2 className="font-display text-2xl text-ink">Answer</h2>
+          {!result.cited_chunks.length ? (
+            <p className="mt-2 rounded-lg border border-amber/40 bg-amber/10 px-3 py-2 text-sm text-ink">
+              The model did not cite the retrieved passages. The list below is
+              what was sent to the generator.
+            </p>
+          ) : null}
           <div className="mt-3">
             <CitedAnswer answer={result.answer} onCite={onCite} />
           </div>
@@ -718,7 +751,25 @@ function RagResults({
             const citationNumber = citationNumbers[index] ?? index + 1;
             return (
               <CitedChunkCard
-                key={chunk.chunk_id}
+                key={`cited-${chunk.chunk_id}`}
+                citationNumber={citationNumber}
+                chunk={chunk}
+                highlighted={false}
+                assignAnchor={false}
+              />
+            );
+          })}
+        </section>
+      ) : null}
+
+      {result.context_chunks.length > 0 ? (
+        <section className="space-y-3">
+          <h3 className="font-display text-xl text-ink">Retrieved context</h3>
+          {result.context_chunks.map((chunk, index) => {
+            const citationNumber = chunk.prompt_index ?? index + 1;
+            return (
+              <CitedChunkCard
+                key={`context-${chunk.chunk_id}`}
                 citationNumber={citationNumber}
                 chunk={chunk}
                 highlighted={highlightedCitation === citationNumber}
@@ -739,8 +790,10 @@ export function SearchPage() {
   const [usePrf, setUsePrf] = useState(false);
   const [useReranker, setUseReranker] = useState(false);
   const [useQueryRewrite, setUseQueryRewrite] = useState(false);
+  const [llmProvider, setLlmProvider] = useState<LlmProvider>("ollama");
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [topK, setTopK] = useState(10);
+  const [ragTopK, setRagTopK] = useState(4);
   const [k1, setK1] = useState(1.5);
   const [b, setB] = useState(0.75);
   const [loading, setLoading] = useState(false);
@@ -815,13 +868,14 @@ export function SearchPage() {
       } else {
         const response = await searchRag({
           query: trimmed,
-          top_k: topK,
+          top_k: ragTopK,
           use_reranker: useReranker,
           use_query_rewrite: useQueryRewrite,
+          llm_provider: llmProvider,
         });
         setRagResult(response);
         setElapsedMs(response.elapsed_ms);
-        setResultCount(response.cited_chunks.length);
+        setResultCount(response.context_chunks.length);
       }
     } catch (cause) {
       resetResults();
@@ -898,7 +952,39 @@ export function SearchPage() {
         ) : null}
 
         {algorithm === "rag" ? (
-          <div className="flex flex-wrap gap-4">
+          <div className="space-y-3">
+            <fieldset className="flex flex-wrap gap-2">
+              <legend className="mb-1 w-full text-sm text-ink-soft">
+                Generator
+              </legend>
+              {(
+                [
+                  { id: "ollama", label: "Ollama (local)" },
+                  { id: "gemini", label: "Gemini (API)" },
+                ] as const
+              ).map((option) => (
+                <label
+                  key={option.id}
+                  className={[
+                    "cursor-pointer rounded-full border px-4 py-2 text-sm font-medium",
+                    llmProvider === option.id
+                      ? "border-burgundy bg-burgundy text-paper"
+                      : "border-rule bg-card text-ink hover:border-burgundy/40",
+                  ].join(" ")}
+                >
+                  <input
+                    type="radio"
+                    name="llm-provider"
+                    value={option.id}
+                    checked={llmProvider === option.id}
+                    onChange={() => setLlmProvider(option.id)}
+                    className="sr-only"
+                  />
+                  {option.label}
+                </label>
+              ))}
+            </fieldset>
+            <div className="flex flex-wrap gap-4">
             <label className="flex cursor-pointer items-center gap-2 text-sm text-ink">
               <input
                 type="checkbox"
@@ -917,6 +1003,7 @@ export function SearchPage() {
               />
               Rewrite query
             </label>
+            </div>
           </div>
         ) : null}
 
@@ -936,9 +1023,16 @@ export function SearchPage() {
                 <input
                   type="number"
                   min={1}
-                  max={50}
-                  value={topK}
-                  onChange={(event) => setTopK(Number(event.target.value))}
+                  max={algorithm === "rag" ? 8 : 50}
+                  value={algorithm === "rag" ? ragTopK : topK}
+                  onChange={(event) => {
+                    const value = Number(event.target.value);
+                    if (algorithm === "rag") {
+                      setRagTopK(value);
+                    } else {
+                      setTopK(value);
+                    }
+                  }}
                   className="w-full rounded-lg border border-rule bg-paper px-3 py-2"
                 />
               </label>

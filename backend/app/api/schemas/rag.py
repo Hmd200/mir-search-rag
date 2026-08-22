@@ -1,5 +1,7 @@
 """RAG API request and response schemas."""
 
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 
@@ -7,9 +9,10 @@ class RagRequest(BaseModel):
     """JSON body for grounded answer generation."""
 
     query: str = Field(min_length=1, max_length=500)
-    top_k: int = Field(default=5, ge=1, le=50)
+    top_k: int = Field(default=4, ge=1, le=8)
     use_reranker: bool = False
     use_query_rewrite: bool = False
+    llm_provider: Literal["ollama", "gemini"] | None = None
 
 
 class RagCitedChunk(BaseModel):
@@ -24,6 +27,16 @@ class RagCitedChunk(BaseModel):
     score: float
     retrieval_score: float
     rerank_score: float | None = None
+    prompt_index: int | None = None
+
+
+AbstentionReason = Literal[
+    "no_context",
+    "low_relevance",
+    "model_abstained",
+    "citation_failure",
+    "grounding_failure",
+]
 
 
 class RagResponse(BaseModel):
@@ -32,7 +45,11 @@ class RagResponse(BaseModel):
     query: str
     answer: str
     cited_chunks: list[RagCitedChunk]
+    context_chunks: list[RagCitedChunk]
     invalid_citations: list[str]
     abstained: bool
     elapsed_ms: float
     rewritten_query: str | None = None
+    llm_provider: Literal["ollama", "gemini"]
+    citation_enforced: bool = False
+    abstention_reason: AbstentionReason | None = None

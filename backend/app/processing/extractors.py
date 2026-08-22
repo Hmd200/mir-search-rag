@@ -1,4 +1,7 @@
-"""Local PDF and DOCX text extraction with citation metadata."""
+"""PDF, DOCX, and URL text extraction with citation metadata.
+
+URL scraping uses trafilatura and SSRF guards (DNS, private IPs, redirects).
+"""
 
 import ipaddress
 import socket

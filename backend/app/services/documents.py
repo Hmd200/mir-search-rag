@@ -391,26 +391,46 @@ class DocumentService:
             KeywordIndexError,
             VectorStoreError,
         ) as error:
-            self.session.rollback()
+            rollback_failures: list[str] = []
             try:
-                if keyword_index_removed:
+                self.session.rollback()
+            except Exception:
+                rollback_failures.append("database rollback")
+
+            if keyword_index_removed:
+                try:
                     self.keyword_index.upsert_document(
                         document.id,
                         keyword_chunks,
                     )
-                if vector_index_removed:
+                except Exception:
+                    rollback_failures.append("keyword-index restoration")
+
+            if vector_index_removed:
+                try:
                     self.vector_store.upsert_document(
                         document.id,
                         vector_chunks,
                         self.embeddings,
                     )
-            finally:
-                if (
-                    source_path is not None
-                    and tombstone_path is not None
-                    and tombstone_path.exists()
-                ):
-                    tombstone_path.replace(source_path)
+                except Exception:
+                    rollback_failures.append("vector-index restoration")
+
+            if (
+                source_path is not None
+                and tombstone_path is not None
+                and tombstone_path.exists()
+            ):
+                try:
+                    self._restore_tombstoned_source(tombstone_path, source_path)
+                except Exception:
+                    rollback_failures.append("source-file restoration")
+
+            if rollback_failures:
+                raise DocumentServiceError(
+                    "Could not delete the document; rollback was incomplete: "
+                    + ", ".join(rollback_failures)
+                ) from error
             raise DocumentServiceError("Could not delete the document.") from error
 
         if tombstone_path is not None:
@@ -420,3 +440,12 @@ class DocumentService:
                 raise DocumentServiceError(
                     "Document metadata was deleted, but file cleanup failed."
                 ) from error
+
+    @staticmethod
+    def _restore_tombstoned_source(
+        tombstone_path: Path,
+        source_path: Path,
+    ) -> None:
+        """Move a deletion tombstone back to the original source path."""
+
+        tombstone_path.replace(source_path)

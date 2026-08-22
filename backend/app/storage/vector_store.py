@@ -174,11 +174,12 @@ class ChromaVectorStore:
                 VectorSearchHit(
                     chunk_id=chunk_id,
                     distance=float(distance),
+                    # Chroma cosine distance in [0, 2]; similarity = 1 - d, clamped.
                     score=max(0.0, min(1.0, 1.0 - float(distance))),
                 )
                 for chunk_id, distance in zip(ids[0], distances[0], strict=True)
             ]
-            hits.sort(key=lambda hit: (-hit.score, hit.chunk_id))
+            hits.sort(key=lambda hit: (hit.distance, hit.chunk_id))
             return hits
         except ValueError:
             raise

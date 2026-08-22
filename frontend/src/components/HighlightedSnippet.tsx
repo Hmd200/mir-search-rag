@@ -25,7 +25,12 @@ export function HighlightedSnippet({
       parts.push(text.slice(lastIndex, match.index));
     }
     parts.push(
-      <mark key={`${match.index}-${match[0]}`}>{match[0]}</mark>,
+      <mark
+        key={`${match.index}-${match[0]}`}
+        className="bg-amber/20"
+      >
+        {match[0]}
+      </mark>,
     );
     lastIndex = match.index + match[0].length;
     if (pattern.lastIndex === match.index) {

@@ -125,7 +125,6 @@ export type ListDocumentsParams = {
 export type KeywordSearchParams = {
   q: string;
   top_k?: number;
-  candidate_limit?: number;
   use_prf?: boolean;
 };
 
@@ -139,16 +138,28 @@ export type RagCitedChunk = {
   score: number;
   retrieval_score: number;
   rerank_score: number | null;
+  prompt_index?: number | null;
 };
+
+export type AbstentionReason =
+  | "no_context"
+  | "low_relevance"
+  | "model_abstained"
+  | "citation_failure"
+  | "grounding_failure";
 
 export type RagResponse = {
   query: string;
   answer: string;
   cited_chunks: RagCitedChunk[];
+  context_chunks: RagCitedChunk[];
   invalid_citations: string[];
   abstained: boolean;
   elapsed_ms: number;
   rewritten_query: string | null;
+  llm_provider: "ollama" | "gemini";
+  citation_enforced: boolean;
+  abstention_reason: AbstentionReason | null;
 };
 
 export type RagSearchParams = {
@@ -156,12 +167,12 @@ export type RagSearchParams = {
   top_k?: number;
   use_reranker?: boolean;
   use_query_rewrite?: boolean;
+  llm_provider?: "ollama" | "gemini";
 };
 
 export type BM25SearchParams = {
   q: string;
   top_k?: number;
-  candidate_limit?: number;
   k1?: number;
   b?: number;
 };
@@ -356,9 +367,10 @@ export async function searchRag(
 ): Promise<RagResponse> {
   const { data } = await client.post<RagResponse>("/search/rag", {
     query: params.query,
-    top_k: params.top_k ?? 5,
+    top_k: params.top_k ?? 4,
     use_reranker: params.use_reranker ?? false,
     use_query_rewrite: params.use_query_rewrite ?? false,
+    llm_provider: params.llm_provider ?? "ollama",
   });
   return data;
 }

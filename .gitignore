@@ -39,3 +39,6 @@ temp/
 .idea/
 .DS_Store
 Thumbs.db
+
+# Local Claude Code tooling (dev-preview launch config, not project source)
+.claude/

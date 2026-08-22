@@ -44,7 +44,7 @@ class KeywordSearchServiceOutcome:
 
 
 class KeywordSearchService:
-    """Run the custom TF-IDF engine and hydrate ranked chunk results."""
+    """Run TF-IDF or BM25 retrieval and hydrate ranked chunk results."""
 
     def __init__(
         self,
@@ -90,7 +90,6 @@ class KeywordSearchService:
         query: str,
         *,
         top_k: int,
-        candidate_limit: int,
         use_prf: bool = False,
         feedback_docs: int = 5,
         max_expansion_terms: int = 10,
@@ -99,6 +98,11 @@ class KeywordSearchService:
         beta: float = 0.75,
         use_reranker: bool = False,
     ) -> KeywordSearchServiceOutcome:
+        """Run TF-IDF (optional PRF) and hydrate ranked chunks.
+
+        When reranking, retrieve `_RERANK_RETRIEVE_K` (25) then take top_n.
+        """
+
         retrieve_k = _RERANK_RETRIEVE_K if use_reranker else top_k
         if use_prf:
             prf = self.keyword_index.search_with_prf(
@@ -144,7 +148,6 @@ class KeywordSearchService:
         query: str,
         *,
         top_k: int,
-        candidate_limit: int,
         k1: float,
         b: float,
         use_prf: bool = False,
@@ -155,7 +158,10 @@ class KeywordSearchService:
         beta: float = 0.75,
         use_reranker: bool = False,
     ) -> KeywordSearchServiceOutcome:
-        """Run BM25 and hydrate its ranked chunks with citation metadata."""
+        """Run BM25 (optional PRF) and hydrate ranked chunks.
+
+        When reranking, retrieve `_RERANK_RETRIEVE_K` (25) then take top_n.
+        """
 
         retrieve_k = _RERANK_RETRIEVE_K if use_reranker else top_k
         if use_prf:

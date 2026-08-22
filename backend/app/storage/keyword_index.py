@@ -103,7 +103,10 @@ class _CandidateSelection:
 
 
 class KeywordIndex:
-    """Thread-safe positional inverted index persisted as atomic JSON."""
+    """Custom inverted index with TF-IDF, BM25, champion lists, and Rocchio.
+
+    Postings store token positions per chunk and persist as atomic JSON.
+    """
 
     def __init__(
         self,
@@ -298,6 +301,11 @@ class KeywordIndex:
 
     @staticmethod
     def _idf(document_frequency: int, chunk_count: int) -> float:
+        """Smoothed IDF: log((N+1)/(df+1))+1.
+
+        Document and query TF-IDF weights use (1 + log tf) * this IDF.
+        """
+
         return math.log((chunk_count + 1) / (document_frequency + 1)) + 1.0
 
     @staticmethod
@@ -312,6 +320,8 @@ class KeywordIndex:
         )
 
     def _recompute_document_norms(self) -> None:
+        """Store L2 norms of each chunk's TF-IDF vector for cosine scoring."""
+
         chunk_count = len(self._chunks)
         norms: dict[str, float] = {}
 
@@ -336,6 +346,12 @@ class KeywordIndex:
         self._document_norms = norms
 
     def _recompute_derived_statistics(self) -> None:
+        """Refresh cosine norms and TF-ranked champion lists.
+
+        Each term keeps the top `champion_size` postings by raw TF
+        (posting length), with chunk_id as a tie-breaker.
+        """
+
         self._recompute_document_norms()
         champion_lists: dict[str, list[str]] = {}
 
@@ -374,57 +390,6 @@ class KeywordIndex:
         if retrieval_mode not in {"champion", "exact"}:
             raise ValueError("retrieval_mode must be 'champion' or 'exact'.")
 
-    def _champion_strength(
-        self,
-        term: str,
-        chunk_id: str,
-        scoring: ScoringMode,
-        *,
-        k1: float,
-        b: float,
-        average_length: float,
-    ) -> float:
-        """Return the term-specific strength of one posting."""
-
-        positions = self._postings[term][chunk_id]
-        term_frequency = len(positions)
-        chunk_count = len(self._chunks)
-        document_frequency = len(self._postings[term])
-
-        if scoring == "tfidf":
-            document_norm = self._document_norms.get(
-                chunk_id,
-                0.0,
-            )
-            if document_norm <= 0:
-                return 0.0
-
-            idf = self._idf(
-                document_frequency,
-                chunk_count,
-            )
-            document_weight = (1.0 + math.log(term_frequency)) * idf
-            return document_weight / document_norm
-
-        if average_length <= 0:
-            return 0.0
-
-        document_length = max(
-            0,
-            int(
-                self._chunks[chunk_id].get(
-                    "length",
-                    0,
-                )
-            ),
-        )
-        length_factor = k1 * (1.0 - b + b * document_length / average_length)
-        idf = self._bm25_idf(
-            document_frequency,
-            chunk_count,
-        )
-        return idf * term_frequency * (k1 + 1.0) / (term_frequency + length_factor)
-
     def _get_champion_lists(
         self,
         scoring: ScoringMode,
@@ -432,7 +397,10 @@ class KeywordIndex:
         k1: float,
         b: float,
     ) -> tuple[dict[str, tuple[str, ...]], bool]:
-        """Return TF-ranked champion lists built from constructor size."""
+        """Return TF-ranked champion lists of constructor size.
+
+        `scoring`, `k1`, and `b` are unused: lists are not score-ranked.
+        """
 
         if not self._champion_lists and self._postings:
             self._recompute_derived_statistics()
@@ -459,7 +427,12 @@ class KeywordIndex:
         k1: float,
         b: float,
     ) -> _CandidateSelection:
-        """Select documents before full TF-IDF or BM25 scoring."""
+        """Select documents before full TF-IDF or BM25 scoring.
+
+        Champion mode unions the TF prefixes of query terms. If that set
+        is smaller than `top_k` and `fallback` is true, score against
+        full postings instead.
+        """
 
         matched_terms = tuple(term for term in query_terms if term in self._postings)
         total_postings = sum(len(self._postings[term]) for term in matched_terms)
@@ -524,7 +497,7 @@ class KeywordIndex:
         self,
         query_frequencies: Mapping[str, float],
     ) -> dict[str, float]:
-        """Return TF-IDF query weights from raw term frequencies."""
+        """Return query weights (1 + log qtf) * smoothed IDF per term."""
 
         chunk_count = len(self._chunks)
         query_weights: dict[str, float] = {}
@@ -611,7 +584,10 @@ class KeywordIndex:
         candidate_ids: Iterable[str],
         top_k: int,
     ) -> list[KeywordSearchHit]:
-        """Calculate cosine scores from a precomputed query vector."""
+        """Cosine TF-IDF: sum_t (q_t * d_t) / (||q|| ||d||).
+
+        Each per-term contribution is stored for the heatmap UI.
+        """
 
         active_weights = {
             term: weight
@@ -690,7 +666,11 @@ class KeywordIndex:
         k1: float,
         b: float,
     ) -> list[KeywordSearchHit]:
-        """Calculate full BM25 scores only for selected candidates."""
+        """Okapi BM25 over selected candidates (defaults k1=1.5, b=0.75).
+
+        score = qtf * IDF * tf*(k1+1) / (tf + k1*(1-b+b*|d|/avgdl))
+        IDF is Robertson–Sparck Jones with a positive lower bound.
+        """
 
         chunk_count = len(self._chunks)
         average_length = self._average_chunk_length()
@@ -1097,15 +1077,16 @@ class KeywordIndex:
         k1: float = 1.5,
         b: float = 0.75,
     ) -> KeywordPrfSearchOutcome:
-        """Expand a TF-IDF query with Rocchio pseudo-relevance feedback.
+        """Expand a query with Rocchio pseudo-relevance feedback.
 
         Formula: q_new = alpha * q_old + beta * centroid(D_rel).
-        D_rel is the top `feedback_docs` chunks from an initial TF-IDF
-        search. There is no non-relevant set, so gamma is 0 and no
-        subtraction term is computed. Original query terms are kept and
-        at most `max_expansion_terms` new centroid terms are added.
-        The expanded weight map is scored with the same cosine TF-IDF
-        path as a normal search.
+        D_rel is the top `feedback_docs` chunks from an initial search
+        using `scoring_mode` (`tfidf` or `bm25`). There is no
+        non-relevant set, so gamma is 0 and no subtraction term is
+        computed. Original query terms are kept and at most
+        `max_expansion_terms` new centroid terms are added. The
+        expanded weight map is scored with the same mode as the
+        first pass.
 
         expansion_terms remains accepted as an alias of
         max_expansion_terms.

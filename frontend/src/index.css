@@ -36,7 +36,6 @@ body {
 }
 
 mark {
-  background: rgba(180, 83, 9, 0.18);
   color: inherit;
   padding: 0 0.12em;
   border-radius: 0.15rem;

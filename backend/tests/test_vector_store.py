@@ -103,3 +103,46 @@ def test_vector_upsert_replaces_stale_chunks_and_delete_is_scoped(
     assert store.delete_document("document-a") is False
     assert store.stats().chunk_count == 1
     assert store.search("database", embedder)[0].chunk_id == "other"
+
+
+class NegativeCosineEmbedder(EmbeddingProvider):
+    """Deterministic signed vectors that yield cosine distances above 1.0."""
+
+    _vectors = {
+        "query": [1.0, 0.0],
+        # cos=-0.5 -> distance=1.5; ID sorts after the farther hit.
+        "near": [-0.5, math.sqrt(0.75)],
+        # cos=-0.9 -> distance=1.9; ID sorts before the nearer hit.
+        "far": [-0.9, math.sqrt(max(0.0, 1.0 - 0.9 * 0.9))],
+    }
+
+    def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        return [list(self._vectors[text]) for text in texts]
+
+    def embed_query(self, query: str) -> list[float]:
+        return list(self._vectors[query])
+
+
+def test_search_ranks_by_raw_distance_when_scores_clamp_to_zero(
+    tmp_path: Path,
+) -> None:
+    embedder = NegativeCosineEmbedder()
+    store = ChromaVectorStore(tmp_path / "chroma", "clamped_scores")
+    store.upsert_document(
+        "document-a",
+        [
+            VectorChunk("z-near", "document-a", "near", 0),
+            VectorChunk("a-far", "document-a", "far", 1),
+        ],
+        embedder,
+    )
+
+    hits = store.search("query", embedder, top_k=2)
+
+    assert [hit.chunk_id for hit in hits] == ["z-near", "a-far"]
+    assert hits[0].distance < hits[1].distance
+    assert hits[0].distance > 1.0
+    assert hits[1].distance > 1.0
+    assert hits[0].score == 0.0
+    assert hits[1].score == 0.0
+    assert hits[0].chunk_id > hits[1].chunk_id

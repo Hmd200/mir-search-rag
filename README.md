@@ -15,7 +15,7 @@ A full-stack search engine that keeps a **hand-built inverted index** and a **Ch
 | **Admin** (`/admin`) | Upload PDF/DOCX, scrape a public URL, list the corpus, delete (both indexes cleaned together) |
 | **Search** (`/`) | TF-IDF, BM25, Semantic, or RAG, with PRF, query rewrite, and rerank as toggles |
 
-Lexical scoring is implemented from scratch (postings, TF-IDF cosine, Okapi BM25, champion lists, Rocchio PRF). Semantic search and RAG use `sentence-transformers/all-MiniLM-L6-v2` locally. Generation uses **Ollama** (`qwen3:8b` by default) — no cloud API key.
+Lexical scoring is implemented from scratch (postings, TF-IDF cosine, Okapi BM25, champion lists, Rocchio PRF). Semantic search and RAG use `sentence-transformers/all-MiniLM-L6-v2` locally. Generation defaults to **Ollama** (`qwen3:8b`); **Gemini** is an optional RAG toggle when `MIR_GEMINI_API_KEY` is set.
 
 ---
 
@@ -32,7 +32,7 @@ flowchart TD
   vsm["TF-IDF + optional PRF"]
   bm25["BM25"]
   sem["Semantic kNN"]
-  rag["Rewrite optional → retrieve → rerank optional → LLM + citations"]
+  rag["Rewrite optional → retrieve → rerank optional → LLM + citations + grounding check"]
 
   src --> parse --> chunk
   chunk --> lex
@@ -43,7 +43,9 @@ flowchart TD
   ui --> rag --> vec
 ```
 
-Add and delete go through one path. If the vector write fails after the keyword write (or the reverse on delete), the other index is rolled back so the two stores stay aligned.
+**Indexing.** An admin upload (PDF/DOCX) or public URL is parsed to text, split into overlapping word chunks (500 words, 75-word overlap), then written to both stores: a custom inverted index (tokenized, stop-word filtered, Porter-stemmed postings with term frequencies) and Chroma (dense vectors from `all-MiniLM-L6-v2`, plus chunk text and metadata). Add and delete go through one path. If the vector write fails after the keyword write (or the reverse on delete), the other index is rolled back so the two stores stay aligned.
+
+**Querying.** TF-IDF (optional Rocchio PRF) and BM25 score the inverted index. Semantic search embeds the query with the same encoder and retrieves nearest chunks from Chroma. RAG optionally rewrites the query for retrieval, takes the top chunks (optional cross-encoder rerank), asks the local LLM to answer with `[n]` citations, then runs a same-model grounding rewrite against the retrieved context. Every accepted factual sentence must end with an in-range citation; verifier failure causes safe abstention. Grounding verification adds one LLM call to successful RAG generation and is best-effort—not a formal entailment guarantee, and it does not make hallucinations impossible.
 
 **Runtime layout** (created on first API start; gitignored except placeholders):
 
@@ -64,7 +66,7 @@ Add and delete go through one path. If the vector write fails after the keyword 
 | **TF-IDF (VSM)** | Cosine over `(1 + log tf) × idf` on **both** query and document (SMART `ltc.ltc`) | Default search uses **champion lists** (top-50 postings per term by TF), then full postings if there are too few candidates. **Rocchio PRF** (`α=1`, `β=0.75`) is a UI toggle; expansion terms are shown as chips. |
 | **BM25** | Okapi BM25, Lucene IDF `ln(1 + (N−df+0.5)/(df+0.5))` | Defaults `k1=1.5`, `b=0.75`, both tunable under Advanced settings. |
 | **Semantic** | Cosine nearest neighbors in Chroma | Same encoder for documents and queries. |
-| **RAG** | Optional rewrite → semantic retrieve (20) → optional rerank → generate | Prompt requires `[1]…[N]` citations. Fabricated markers are stripped. Model may abstain with `INSUFFICIENT_EVIDENCE`. Rewrite changes **retrieval** only; generation still uses the original question. |
+| **RAG** | Optional rewrite → semantic retrieve (20) → optional rerank → generate → same-model grounding verify | Prompt requires `[1]…[N]` citations. Fabricated markers are stripped. A successful cited draft is rewritten once against the retrieved context; every accepted factual sentence must end with an in-range citation. Verifier failure (or empty/`INSUFFICIENT_EVIDENCE` output) abstains. Model may also abstain with `INSUFFICIENT_EVIDENCE` earlier. Grounding verification adds one LLM call to successful generation and is best-effort, not a formal entailment check. Rewrite changes **retrieval** only; generation still uses the original question. |
 
 Lexical preprocessing: Unicode tokenization, stop-word removal, **Porter stemming**. Ranking is **per chunk**; the UI shows document title, score, and a snippet (with page range when known).
 
@@ -77,7 +79,7 @@ Lexical preprocessing: Unicode tokenization, stop-word removal, **Porter stemmin
 - PDF (PyMuPDF) and DOCX (python-docx) parsing, overlapping chunks, dual indexing
 - Custom inverted index + Chroma; synchronized add/delete with rollback
 - TF-IDF, BM25, inexact top-k (champion lists), Rocchio PRF
-- RAG with citations; Ollama generation
+- RAG with citations; Ollama by default, optional Gemini
 - Admin upload / table / delete; Search bar, method selector, PRF toggle, ranked snippets or RAG answer + sources
 
 ### Bonus (all three)
@@ -94,7 +96,7 @@ Lexical preprocessing: Unicode tokenization, stop-word removal, **Porter stemmin
 
 - Python **3.12**
 - Node.js **24** (or current LTS)
-- [Ollama](https://ollama.com) for RAG
+- [Ollama](https://ollama.com) for local RAG (optional if you only use Gemini)
 - Git
 
 Create the virtualenv at the **repository root** (the API reads `.env` and `data/` from the root).
@@ -114,7 +116,7 @@ cd backend
 pip install -e ".[dev]"
 ```
 
-`pip install -e ".[dev]"` installs the API **and** pytest. Dependencies live in `backend/pyproject.toml` (there is no `requirements.txt`).
+`pip install -e ".[dev]"` is the install command: it installs the API **and** pytest. There is no `requirements.txt`; dependencies live in `backend/pyproject.toml`.
 
 If PowerShell blocks `Activate.ps1`:
 
@@ -173,16 +175,37 @@ Vite proxies `/api` to `http://127.0.0.1:8000`.
 | Search | http://localhost:5173/ |
 | Admin | http://localhost:5173/admin |
 
-### Ollama (RAG only)
+### LLM setup (Ollama and optional Gemini)
 
-Lexical and semantic search work without Ollama. RAG needs a local model:
+RAG can use **local Ollama** or **Google Gemini**. Lexical and semantic search need neither.
+
+**Ollama (default, no API key)**
+
+1. Install [Ollama](https://ollama.com).
+2. Pull the default generation model and confirm it is listed:
 
 ```bash
 ollama pull qwen3:8b
 ollama list
 ```
 
-Default endpoint: `http://127.0.0.1:11434`. Recommended: `OLLAMA_KEEP_ALIVE=30m` so the model is not unloaded between requests.
+3. Leave the default endpoint `http://127.0.0.1:11434`. Override `MIR_OLLAMA_BASE_URL` or `MIR_OLLAMA_MODEL` in a root `.env` only if you copied `.env.example` and changed those values.
+4. Recommended: `OLLAMA_KEEP_ALIVE=30m` so the model is not unloaded between requests.
+5. In the Search UI, select RAG → **Ollama (local)**.
+
+**Gemini (optional API key)**
+
+1. Create a key in [Google AI Studio](https://aistudio.google.com/apikey).
+2. Copy `.env.example` to `.env` at the repository root and set:
+
+```bash
+MIR_GEMINI_API_KEY=your_key_here
+```
+
+3. Restart the API. In the Search UI, select RAG → **Gemini (API)**.
+4. Optional: `MIR_GEMINI_MODEL` (default `gemini-2.0-flash`).
+
+Do not commit `.env`. Embedding and reranker weights (`sentence-transformers/all-MiniLM-L6-v2`, `cross-encoder/ms-marco-MiniLM-L-6-v2`) download from Hugging Face on first API start. Those models are public; no Hugging Face token is required.
 
 ### Configuration (`MIR_` prefix)
 
@@ -194,10 +217,14 @@ All optional. `.env` is loaded from the **repository root**.
 | `MIR_EMBEDDING_MODEL` | `sentence-transformers/all-MiniLM-L6-v2` | Document and query embeddings |
 | `MIR_EMBEDDING_DEVICE` | `cpu` | `cpu` or `cuda` |
 | `MIR_OLLAMA_BASE_URL` | `http://127.0.0.1:11434` | Ollama server |
-| `MIR_OLLAMA_MODEL` | `qwen3:8b` | RAG generation model |
+| `MIR_OLLAMA_MODEL` | `qwen3:8b` | RAG generation model (Ollama) |
+| `MIR_LLM_PROVIDER` | `ollama` | Default generator if the UI omits a choice |
+| `MIR_GEMINI_API_KEY` | empty | Required only for the Gemini RAG option |
+| `MIR_GEMINI_MODEL` | `gemini-2.0-flash` | Gemini model id |
 | `MIR_MAX_UPLOAD_SIZE_MB` | `25` | Upload cap |
 | `MIR_CHUNK_SIZE` | `500` | Words per chunk |
 | `MIR_CHUNK_OVERLAP` | `75` | Overlap in words |
+| `MIR_RAG_MIN_RETRIEVAL_SCORE` | `0.30` | Minimum cosine similarity (`1 - distance`, clamped to `[0, 1]`) required of the best RAG context chunk before the LLM is called. Below this, RAG abstains with `INSUFFICIENT_EVIDENCE` while still returning the retrieved context for diagnostics. `0.30` is a conservative starting point—calibrate with relevant, irrelevant, and borderline queries from your corpus. |
 
 BM25 `k1`/`b`, PRF `α`/`β`, and rerank are request/UI parameters (or fields in `backend/app/core/config.py`), not all listed in `.env.example`.
 
@@ -264,7 +291,9 @@ That is the scale at which PRF and semantic search are visible here. A larger, m
 
 - **Index maintenance is not incremental.** Each add/delete recomputes cosine norms and champion lists for the whole inverted index. Fine for a course-sized corpus.
 - **Older uploads** indexed before page-spanning chunks keep the old one-page-per-chunk split until re-uploaded.
-- **LLM provider** is Ollama only (`MIR_LLM_PROVIDER` is reserved for a later client).
+- **LLM:** Ollama is default; Gemini needs `MIR_GEMINI_API_KEY`. Retrieval is unchanged.
+- **RAG grounding:** Successful answers go through a same-model grounding rewrite; every accepted factual sentence must end with an in-range citation, and verifier failure abstains. Same-model verification is best-effort and is not a formal entailment guarantee—hallucinations remain possible. Grounding verification adds one LLM call to successful RAG generation.
+- **RAG can false-abstain on strong vocabulary mismatch.** The relevance gate looks only at dense cosine similarity against a single threshold (`MIR_RAG_MIN_RETRIEVAL_SCORE`). If a query's wording is far enough from the source chunk's wording (e.g. "colour" vs. a chunk that only says "navy"), the correct chunk can retrieve with a low score, fail the gate, and abstain even though the fact is in the corpus and BM25 would have found it easily. This is a known dense-retrieval weakness, not a bug in the gate itself. Hybrid (BM25 + dense) retrieval is the standard fix but is not currently wired into the RAG route.
 - **Demo video** is the remaining submission item (section 10).
 
 ---
