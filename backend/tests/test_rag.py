@@ -18,6 +18,7 @@ from app.services.rag import (
     _SYSTEM_PROMPT,
     RagService,
     normalize_cited_prose,
+    validate_citations,
     validate_sentence_citation_coverage,
 )
 from app.services.semantic_search import SemanticSearchRecord
@@ -100,6 +101,16 @@ def test_retry_prompt_requires_direct_support_and_permits_abstention() -> None:
     assert "insufficient_evidence" in prompt
     assert "do not infer or complete missing facts from outside knowledge" in prompt
     assert "if any context chunk is relevant" not in prompt
+
+
+def test_prompts_require_grouped_citations_not_every_sentence() -> None:
+    for prompt in (_SYSTEM_PROMPT, _RETRY_PROMPT, _GROUNDING_SYSTEM_PROMPT):
+        lowered = prompt.casefold()
+        assert "at most 2 factual sentences" in lowered
+        assert "never following" in lowered
+        assert "every factual sentence must include" not in lowered
+        assert "end every factual sentence" not in lowered
+        assert "put one factual sentence on each nonempty line" not in lowered
 
 
 def test_non_rag_top_k_defaults_and_limits_remain_unchanged() -> None:
@@ -954,6 +965,14 @@ def test_grounding_verifier_accepts_multiline_cited_sentences() -> None:
             "BM25 ranks documents. [1] [2]",
             "BM25 ranks documents [1] [2].",
         ),
+        (
+            "BM25 ranks documents. It normalizes length [1].",
+            "BM25 ranks documents. It normalizes length [1].",
+        ),
+        (
+            "First claim. Second claim [1]. Third claim. Fourth claim [2].",
+            "First claim. Second claim [1].\nThird claim. Fourth claim [2].",
+        ),
     ],
 )
 def test_supported_citation_endings_are_normalized(
@@ -989,12 +1008,12 @@ def test_multiline_cited_bullets_are_accepted_and_preserved() -> None:
     [
         "BM25 ranks documents.",
         "BM25 ranks documents [1]. It normalizes length.",
-        "BM25 ranks documents. It normalizes length [2].",
         "[1].",
         "BM25 [1] normalizes length [2].",
         "BM25 ranks documents [3].",
         "BM25 ranks documents [source].",
         "# BM25 ranks documents [1].",
+        "First claim. Second claim. Third claim [1].",
     ],
 )
 def test_unsupported_citation_coverage_is_rejected(answer: str) -> None:
@@ -1131,26 +1150,30 @@ def test_mid_sentence_citation_without_terminal_citation_is_rejected() -> None:
     assert outcome.abstention_reason == "citation_failure"
 
 
-def test_uncited_first_sentence_followed_by_cited_second_is_rejected() -> None:
+def test_uncited_first_sentence_is_covered_by_following_terminal_citation() -> None:
+    """Former strict per-sentence reject: 'A. B [1].' is now a valid group of 2."""
+
     records = [_record(index) for index in range(1, 3)]
+    verified = "BM25 ranks documents. It normalizes length [2]."
     llm = FakeLLM(
         "",
         answers=[
             "BM25 ranks documents [1].",
-            "BM25 ranks documents. It normalizes length [2].",
+            verified,
         ],
     )
     service = RagService(FakeSearch(records), llm)
 
     outcome = service.generate("What does BM25 do?", top_k=2)
 
-    assert outcome.abstained is True
-    assert outcome.abstention_reason == "citation_failure"
-    assert outcome.cited_chunks == ()
+    assert outcome.abstained is False
+    assert outcome.abstention_reason is None
+    assert outcome.answer == verified
+    assert [chunk.chunk_id for chunk in outcome.cited_chunks] == ["chunk-2"]
     assert validate_sentence_citation_coverage(
-        normalize_cited_prose("BM25 ranks documents. It normalizes length [2]."),
+        normalize_cited_prose(verified),
         2,
-    ) is False
+    ) is True
 
 
 def test_cited_first_sentence_followed_by_uncited_second_is_rejected() -> None:
@@ -1171,23 +1194,26 @@ def test_cited_first_sentence_followed_by_uncited_second_is_rejected() -> None:
     assert outcome.cited_chunks == ()
 
 
-def test_grounding_verifier_rejects_multiple_sentences_on_one_line() -> None:
+def test_grounding_verifier_accepts_two_sentences_closed_by_one_citation() -> None:
+    """Former one-line multi-sentence reject: a 2-sentence group may share [1]."""
+
     records = [_record(index) for index in range(1, 3)]
+    verified = "BM25 normalizes document length. It is used everywhere [1]."
     llm = FakeLLM(
         "",
         answers=[
             "BM25 normalizes document length [1].",
-            "BM25 normalizes document length. It is used everywhere [1].",
+            verified,
         ],
     )
     service = RagService(FakeSearch(records), llm)
 
     outcome = service.generate("What does BM25 do?", top_k=2)
 
-    assert outcome.answer == "INSUFFICIENT_EVIDENCE"
-    assert outcome.abstained is True
-    assert outcome.abstention_reason == "citation_failure"
-    assert outcome.cited_chunks == ()
+    assert outcome.abstained is False
+    assert outcome.abstention_reason is None
+    assert outcome.answer == verified
+    assert [chunk.chunk_id for chunk in outcome.cited_chunks] == ["chunk-1"]
     assert len(llm.prompts) == 2
 
 
@@ -1250,6 +1276,163 @@ def test_ordinary_abbreviations_are_accepted() -> None:
     assert outcome.abstention_reason is None
     assert outcome.answer == verified
     assert validate_sentence_citation_coverage(verified, 2) is True
+
+
+def test_citation_covers_preceding_sentences_not_following() -> None:
+    assert (
+        validate_sentence_citation_coverage(
+            "First claim. Second claim [1].",
+            2,
+        )
+        is True
+    )
+    assert (
+        validate_sentence_citation_coverage(
+            "First claim [1]. Second claim.",
+            2,
+        )
+        is False
+    )
+
+
+def test_three_sentences_one_citation_fail_at_default_max() -> None:
+    assert (
+        validate_sentence_citation_coverage(
+            "First claim. Second claim. Third claim [1].",
+            2,
+        )
+        is False
+    )
+
+
+def test_two_closed_groups_of_two_sentences_pass() -> None:
+    assert (
+        validate_sentence_citation_coverage(
+            "First claim. Second claim [1]. Third claim. Fourth claim [2].",
+            2,
+        )
+        is True
+    )
+
+
+def test_adjacent_wrapped_lines_share_a_citation_group() -> None:
+    wrapped = "BM25 saturates term frequency.\nIt also normalizes length [1]."
+    normalized = normalize_cited_prose(wrapped)
+    assert validate_sentence_citation_coverage(normalized, 2) is True
+    assert "\n\n" not in normalized
+
+
+def test_blank_paragraph_prevents_sharing_a_citation_group() -> None:
+    separated = "BM25 saturates term frequency.\n\nIt also normalizes length [1]."
+    normalized = normalize_cited_prose(separated)
+    assert "\n\n" in normalized
+    assert validate_sentence_citation_coverage(normalized, 2) is False
+
+
+def test_markdown_structure_on_a_wrapped_line_is_still_rejected() -> None:
+    """Joining wraps must not let a table row ride along with a later citation."""
+
+    table = "Intro prose here.\n| a | b | c [1]."
+    heading = "Intro prose here.\n# Heading text [1]."
+    for answer in (table, heading):
+        assert validate_sentence_citation_coverage(
+            normalize_cited_prose(answer),
+            2,
+        ) is False
+
+
+def test_display_equation_on_a_wrapped_line_is_still_rejected() -> None:
+    answer = "Intro prose here.\n$$x = y$$ follows from this [1]."
+    assert validate_sentence_citation_coverage(
+        normalize_cited_prose(answer),
+        2,
+    ) is False
+
+
+def test_separate_bullets_do_not_share_a_final_citation() -> None:
+    answer = "- First claim.\n- Second claim [1]."
+    assert validate_sentence_citation_coverage(
+        normalize_cited_prose(answer),
+        2,
+    ) is False
+
+
+def test_one_bullet_may_hold_a_two_sentence_group() -> None:
+    answer = "- First claim. Second claim [1]."
+    assert validate_sentence_citation_coverage(
+        normalize_cited_prose(answer),
+        2,
+    ) is True
+
+
+def test_out_of_range_terminal_citation_leaves_an_uncovered_group() -> None:
+    cleaned, invalid = validate_citations("A. B [9].", 2)
+    assert invalid == ("[9]",)
+    assert "[9]" not in cleaned
+    assert validate_sentence_citation_coverage(cleaned, 2) is False
+
+
+def test_out_of_range_marker_with_remaining_valid_citation_is_citation_failure() -> None:
+    records = [_record(index) for index in range(1, 3)]
+    llm = FakeLLM(
+        "",
+        answers=[
+            "BM25 ranks documents [1].",
+            "BM25 ranks documents [1]. Extra claim [9].",
+        ],
+    )
+    service = RagService(FakeSearch(records), llm)
+
+    outcome = service.generate("What does BM25 do?", top_k=2)
+
+    assert outcome.abstained is True
+    assert outcome.abstention_reason == "citation_failure"
+    assert "[9]" in outcome.invalid_citations
+
+
+def test_max_sentences_one_reproduces_strict_sentence_level_citations() -> None:
+    records = [_record(index) for index in range(1, 3)]
+    grouped = "BM25 ranks documents. It normalizes length [1]."
+    llm = FakeLLM("", answers=["BM25 ranks documents [1].", grouped])
+    grouped_service = RagService(
+        FakeSearch(records),
+        llm,
+        max_sentences_per_citation_group=1,
+    )
+
+    grouped_outcome = grouped_service.generate("What does BM25 do?", top_k=2)
+
+    assert grouped_outcome.abstained is True
+    assert grouped_outcome.abstention_reason == "citation_failure"
+    assert validate_sentence_citation_coverage(
+        grouped, 2, max_sentences_per_group=1
+    ) is False
+    assert validate_sentence_citation_coverage(
+        "BM25 ranks documents [1].\nIt normalizes length [2].",
+        2,
+        max_sentences_per_group=1,
+    ) is True
+
+
+def test_max_sentences_three_accepts_three_and_rejects_four() -> None:
+    three = "First claim. Second claim. Third claim [1]."
+    four = "First claim. Second claim. Third claim. Fourth claim [1]."
+    assert validate_sentence_citation_coverage(
+        three, 2, max_sentences_per_group=3
+    ) is True
+    assert validate_sentence_citation_coverage(
+        four, 2, max_sentences_per_group=3
+    ) is False
+    records = [_record(index) for index in range(1, 3)]
+    llm = FakeLLM("", answers=["First claim [1].", three])
+    service = RagService(
+        FakeSearch(records),
+        llm,
+        max_sentences_per_citation_group=3,
+    )
+    outcome = service.generate("What does BM25 do?", top_k=2)
+    assert outcome.abstained is False
+    assert outcome.answer == three
 
 
 def test_prompts_describe_context_as_untrusted_evidence() -> None:

@@ -34,6 +34,9 @@ def get_rag_service(
         ),
         create_llm_client(settings),
         min_retrieval_score=settings.rag_min_retrieval_score,
+        max_sentences_per_citation_group=(
+            settings.rag_max_sentences_per_citation_group
+        ),
     )
 
 

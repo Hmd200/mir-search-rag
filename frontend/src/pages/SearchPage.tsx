@@ -100,7 +100,7 @@ function abstentionMessage(reason: AbstentionReason | null): string {
     case "model_abstained":
       return "The generator could not find a supported answer.";
     case "citation_failure":
-      return "The system could not produce an answer with valid sentence-level citations.";
+      return "The system could not produce an answer with valid citations.";
     case "grounding_failure":
       return "The answer could not be verified against the retrieved passages.";
     default:

@@ -62,6 +62,7 @@ class Settings(BaseSettings):
     rerank_model_name: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
     rerank_enabled_default: bool = False
     rag_min_retrieval_score: float = Field(default=0.30, ge=0.0, le=1.0)
+    rag_max_sentences_per_citation_group: int = Field(default=2, ge=1, le=8)
 
     max_upload_size_mb: int = 25
     chunk_size: int = 500
