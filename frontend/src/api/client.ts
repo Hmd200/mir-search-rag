@@ -65,9 +65,12 @@ export type KeywordSearchResponse = {
   reranked: boolean;
 };
 
+export type Bm25Mode = "default" | "tunable" | "finetuned";
+
 export type BM25SearchResponse = {
   query: string;
   mode: "bm25";
+  bm25_mode: Bm25Mode | null;
   k1: number;
   b: number;
   result_count: number;
@@ -173,6 +176,7 @@ export type RagSearchParams = {
 export type BM25SearchParams = {
   q: string;
   top_k?: number;
+  bm25_mode: Bm25Mode;
   k1?: number;
   b?: number;
 };

@@ -13,7 +13,7 @@ A full-stack search engine that keeps a **hand-built inverted index** and a **Ch
 | Surface | What you get |
 |---|---|
 | **Admin** (`/admin`) | Upload PDF/DOCX, scrape a public URL, list the corpus, delete (both indexes cleaned together) |
-| **Search** (`/`) | TF-IDF, BM25, Semantic, or RAG, with PRF, query rewrite, and rerank as toggles |
+| **Search** (`/`) | TF-IDF, BM25 (default / tunable / finetuned), Semantic, or RAG, with PRF, query rewrite, and rerank as toggles |
 
 Lexical scoring is implemented from scratch (postings, TF-IDF cosine, Okapi BM25, champion lists, Rocchio PRF). Semantic search and RAG use `sentence-transformers/all-MiniLM-L6-v2` locally. Generation defaults to **Ollama** (`qwen3:8b`); **Gemini** is an optional RAG toggle when `MIR_GEMINI_API_KEY` is set.
 
@@ -64,7 +64,7 @@ flowchart TD
 | Method | Scoring | Notes |
 |---|---|---|
 | **TF-IDF (VSM)** | Cosine over `(1 + log tf) × idf` on **both** query and document (SMART `ltc.ltc`) | Default search uses **champion lists** (top-50 postings per term by TF), then full postings if there are too few candidates. **Rocchio PRF** (`α=1`, `β=0.75`) is a UI toggle; expansion terms are shown as chips. |
-| **BM25** | Okapi BM25, Lucene IDF `ln(1 + (N−df+0.5)/(df+0.5))` | Defaults `k1=1.5`, `b=0.75`, both tunable under Advanced settings. |
+| **BM25** | Okapi BM25, Lucene IDF `ln(1 + (N−df+0.5)/(df+0.5))` | Three modes: **default** always uses `k1=1.5`, `b=0.75`; **tunable** uses request `k1`/`b`; **finetuned** uses `MIR_BM25_FINETUNED_K1` / `MIR_BM25_FINETUNED_B` (also `1.5` / `0.75` after an in-sample sweep that tied). The UI always sends the selected mode. The response reports the mode and the effective `k1`/`b`. |
 | **Semantic** | Cosine nearest neighbors in Chroma | Same encoder for documents and queries. |
 | **RAG** | Optional rewrite → semantic retrieve (20) → optional rerank → generate → same-model grounding verify | Prompt requires `[1]…[N]` citations. Fabricated markers are stripped. A successful cited draft is rewritten once against the retrieved context; each accepted group of at most two factual sentences must end with an in-range citation (configurable via `MIR_RAG_MAX_SENTENCES_PER_CITATION_GROUP`). Verifier failure (or empty/`INSUFFICIENT_EVIDENCE` output) abstains. Model may also abstain with `INSUFFICIENT_EVIDENCE` earlier. Grounding verification adds one LLM call to successful generation and is best-effort, not a formal entailment check. Rewrite changes **retrieval** only; generation still uses the original question. |
 
@@ -226,8 +226,10 @@ All optional. `.env` is loaded from the **repository root**.
 | `MIR_CHUNK_OVERLAP` | `75` | Overlap in words |
 | `MIR_RAG_MIN_RETRIEVAL_SCORE` | `0.30` | Minimum cosine similarity (`1 - distance`, clamped to `[0, 1]`) required of the best RAG context chunk before the LLM is called. Below this, RAG abstains with `INSUFFICIENT_EVIDENCE` while still returning the retrieved context for diagnostics. `0.30` is a conservative starting point—calibrate with relevant, irrelevant, and borderline queries from your corpus. |
 | `MIR_RAG_MAX_SENTENCES_PER_CITATION_GROUP` | `2` | Maximum factual sentences a single terminal citation group may cover. A citation supports only the preceding sentences in its group, never following ones. `1` restores strict per-sentence citations. |
+| `MIR_BM25_FINETUNED_K1` | `1.5` | `k1` used when `GET /search/bm25` is called with `bm25_mode=finetuned`. Request `k1` is ignored. Selected by an in-sample nDCG@4 sweep on the 12-query eval gold set; the grid tied, so the standard empirical baseline was retained. |
+| `MIR_BM25_FINETUNED_B` | `0.75` | `b` used when `GET /search/bm25` is called with `bm25_mode=finetuned`. Request `b` is ignored. Same in-sample calibration as `MIR_BM25_FINETUNED_K1`. |
 
-BM25 `k1`/`b`, PRF `α`/`β`, and rerank are request/UI parameters (or fields in `backend/app/core/config.py`), not all listed in `.env.example`.
+BM25 **default** mode is the standard empirical pair `k1=1.5`, `b=0.75` and ignores request `k1`/`b`. **Tunable** mode uses the request fields (query-param defaults remain `1.5`/`0.75`). Omitting `bm25_mode` preserves the previous API: request `k1`/`b` are used. PRF `α`/`β` and rerank remain request/UI parameters (or fields in `backend/app/core/config.py`).
 
 ---
 
@@ -267,9 +269,12 @@ Offline eval in `backend/evaluation/`: four short corpus files, a 12-query gold 
 ```bash
 cd backend
 python evaluation/run_evaluation.py
+python evaluation/run_evaluation.py --sweep-bm25
 ```
 
-Writes `backend/evaluation/results.md`.
+Writes `backend/evaluation/results.md`. The sweep appends a BM25 `k1`/`b` section without rewriting the method comparison. It builds **one** throwaway inverted index from `backend/evaluation/corpus/`, skips embeddings/Chroma, and scores the 12-query gold set with exact BM25 (`use_champions=False`).
+
+The sweep is **in-sample calibration** on those 12 queries, not an independent test. Primary metric: macro nDCG@4; tie-breaker: MRR; P@4 is reported only (it is structurally flat at `top_k=4` with four documents). 11 of 16 cells tied on nDCG@4 and MRR, so **`k1=1.5`, `b=0.75` was retained** as `MIR_BM25_FINETUNED_K1` / `MIR_BM25_FINETUNED_B`. That pair is not a claim of generalization beyond this gold set.
 
 **P@4 is `|relevant| / 4` on this corpus** (`top_k=4`, four documents). Macro P@4 / MRR / nDCG therefore barely move between methods. Empty-relevant queries are reported separately (true-negative check: P@4 = 0 for every method).
 

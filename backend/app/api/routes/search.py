@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.api.dependencies import get_keyword_index
 from app.api.schemas.search import (
+    Bm25Mode,
     BM25SearchResponse,
     KeywordIndexStatsResponse,
     KeywordSearchResponse,
@@ -21,6 +22,26 @@ from app.storage.database import get_database_session
 from app.storage.keyword_index import KeywordIndex, PrfExpansion
 
 router = APIRouter(prefix="/search")
+
+_BM25_STANDARD_K1 = 1.5
+_BM25_STANDARD_B = 0.75
+
+
+def _resolve_bm25_parameters(
+    mode: Bm25Mode | None,
+    request_k1: float,
+    request_b: float,
+    settings: Settings,
+) -> tuple[Bm25Mode | None, float, float]:
+    """Return the selected mode and the k1/b that will actually score."""
+
+    if mode is None:
+        return None, request_k1, request_b
+    if mode == "default":
+        return "default", _BM25_STANDARD_K1, _BM25_STANDARD_B
+    if mode == "tunable":
+        return "tunable", request_k1, request_b
+    return "finetuned", settings.bm25_finetuned_k1, settings.bm25_finetuned_b
 
 
 def _expansion_payload(
@@ -116,8 +137,9 @@ def bm25_search(
     keyword_index: Annotated[KeywordIndex, Depends(get_keyword_index)],
     settings: Annotated[Settings, Depends(get_settings)],
     top_k: Annotated[int, Query(ge=1, le=50)] = 10,
-    k1: Annotated[float, Query(gt=0.0, le=10.0)] = 1.5,
-    b: Annotated[float, Query(ge=0.0, le=1.0)] = 0.75,
+    bm25_mode: Annotated[Bm25Mode | None, Query()] = None,
+    k1: Annotated[float, Query(gt=0.0, le=10.0)] = _BM25_STANDARD_K1,
+    b: Annotated[float, Query(ge=0.0, le=1.0)] = _BM25_STANDARD_B,
     use_prf: Annotated[bool, Query()] = False,
     feedback_docs: Annotated[int | None, Query(ge=1, le=50)] = None,
     max_expansion_terms: Annotated[int | None, Query(ge=0, le=100)] = None,
@@ -126,9 +148,15 @@ def bm25_search(
     beta: Annotated[float | None, Query()] = None,
     use_reranker: Annotated[bool | None, Query()] = None,
 ) -> BM25SearchResponse:
-    """Search indexed chunks using tunable Okapi BM25 ranking."""
+    """Search indexed chunks using Okapi BM25 in default, tunable, or finetuned mode."""
 
     started = perf_counter()
+    resolved_mode, effective_k1, effective_b = _resolve_bm25_parameters(
+        bm25_mode,
+        k1,
+        b,
+        settings,
+    )
     resolved_expansion = (
         max_expansion_terms if max_expansion_terms is not None else expansion_terms
     )
@@ -138,8 +166,8 @@ def bm25_search(
     outcome = KeywordSearchService(session, keyword_index).search_bm25(
         query,
         top_k=top_k,
-        k1=k1,
-        b=b,
+        k1=effective_k1,
+        b=effective_b,
         use_prf=use_prf,
         feedback_docs=(
             feedback_docs if feedback_docs is not None else settings.prf_feedback_docs
@@ -157,8 +185,9 @@ def bm25_search(
     results = _result_payload(outcome.records)
     return BM25SearchResponse(
         query=query,
-        k1=k1,
-        b=b,
+        bm25_mode=resolved_mode,
+        k1=effective_k1,
+        b=effective_b,
         result_count=len(results),
         elapsed_ms=elapsed_ms,
         results=results,

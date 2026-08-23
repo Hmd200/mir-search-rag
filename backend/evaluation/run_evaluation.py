@@ -13,10 +13,12 @@ deleted on exit.
 Run from the backend package root:
 
     python evaluation/run_evaluation.py
+    python evaluation/run_evaluation.py --sweep-bm25
 """
 
 from __future__ import annotations
 
+import argparse
 import json
 import math
 import os
@@ -45,6 +47,12 @@ GOLD_PATH = EVAL_DIR / "gold_set.json"
 RESULTS_PATH = EVAL_DIR / "results.md"
 TOP_K = 4
 METHODS = ("TF-IDF", "TF-IDF+PRF", "BM25", "Semantic")
+BM25_SWEEP_K1_VALUES = (0.9, 1.2, 1.5, 2.0)
+BM25_SWEEP_B_VALUES = (0.3, 0.5, 0.75, 1.0)
+BM25_STANDARD_K1 = 1.5
+BM25_STANDARD_B = 0.75
+BM25_SWEEP_TIE_ABS_TOL = 1e-12
+BM25_SWEEP_HEADING = "## BM25 parameter sweep (in-sample calibration)"
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,6 +69,20 @@ class MethodScores:
     p_at_4: float
     reciprocal_rank: float
     ndcg_at_4: float
+
+
+@dataclass(frozen=True, slots=True)
+class Bm25SweepCell:
+    k1: float
+    b: float
+    p_at_4: float
+    mrr: float
+    ndcg_at_4: float
+    rank_1: int
+    rank_2: int
+    rank_3: int
+    rank_4: int
+    missed: int
 
 
 def _load_corpus() -> list[tuple[str, str]]:
@@ -528,7 +550,323 @@ def _print_and_collect(
     return "\n".join(lines) + "\n", "\n".join(markdown) + "\n"
 
 
-def main() -> int:
+def _split_results_markdown(markdown: str) -> tuple[str, str | None]:
+    marker = "## BM25 parameter sweep"
+    index = markdown.find(marker)
+    if index < 0:
+        return markdown, None
+    return markdown[:index].rstrip(), markdown[index:].strip()
+
+
+def _write_results_file(
+    *,
+    core_markdown: str | None = None,
+    sweep_markdown: str | None = None,
+) -> None:
+    existing = RESULTS_PATH.read_text(encoding="utf-8") if RESULTS_PATH.exists() else ""
+    existing_core, existing_sweep = _split_results_markdown(existing)
+    core = existing_core if core_markdown is None else core_markdown
+    sweep = existing_sweep if sweep_markdown is None else sweep_markdown
+    parts = [core.rstrip()]
+    if sweep:
+        parts.append(sweep.rstrip())
+    RESULTS_PATH.write_text("\n\n".join(parts) + "\n", encoding="utf-8", newline="\r\n")
+
+
+def _build_keyword_index_only(
+    documents: Sequence[tuple[str, str]],
+    workdir: Path,
+) -> KeywordIndex:
+    keyword_index = KeywordIndex(workdir / "keyword-index.json")
+    for filename, text in documents:
+        keyword_index.upsert_document(filename, ((filename, text),))
+    return keyword_index
+
+
+def _rank_position_counts(
+    ranked_ids: Sequence[str],
+    relevant: frozenset[str],
+) -> tuple[int, int, int, int, int]:
+    top = list(ranked_ids[:TOP_K])
+    counts = [0, 0, 0, 0]
+    missed = 0
+    for chunk_id in relevant:
+        try:
+            rank = top.index(chunk_id) + 1
+        except ValueError:
+            missed += 1
+            continue
+        counts[rank - 1] += 1
+    return counts[0], counts[1], counts[2], counts[3], missed
+
+
+def _evaluate_bm25_cell(
+    keyword_index: KeywordIndex,
+    queries: Sequence[GoldQuery],
+    k1: float,
+    b: float,
+) -> Bm25SweepCell:
+    p_values: list[float] = []
+    mrr_values: list[float] = []
+    ndcg_values: list[float] = []
+    rank_1 = rank_2 = rank_3 = rank_4 = missed = 0
+    for gold in queries:
+        hits = keyword_index.search_bm25(
+            gold.query,
+            top_k=TOP_K,
+            use_champions=False,
+            k1=k1,
+            b=b,
+        )
+        ranked_ids = _keyword_ids(hits)
+        p_values.append(_precision_at_k(ranked_ids, gold.relevant_files, TOP_K))
+        mrr_values.append(_reciprocal_rank(ranked_ids, gold.relevant_files))
+        ndcg_values.append(_ndcg_at_k(ranked_ids, gold.relevant_files, TOP_K))
+        r1, r2, r3, r4, miss = _rank_position_counts(
+            ranked_ids,
+            gold.relevant_files,
+        )
+        rank_1 += r1
+        rank_2 += r2
+        rank_3 += r3
+        rank_4 += r4
+        missed += miss
+    return Bm25SweepCell(
+        k1=k1,
+        b=b,
+        p_at_4=_mean(p_values),
+        mrr=_mean(mrr_values),
+        ndcg_at_4=_mean(ndcg_values),
+        rank_1=rank_1,
+        rank_2=rank_2,
+        rank_3=rank_3,
+        rank_4=rank_4,
+        missed=missed,
+    )
+
+
+def _metrics_tied(left: float, right: float) -> bool:
+    return math.isclose(left, right, rel_tol=0.0, abs_tol=BM25_SWEEP_TIE_ABS_TOL)
+
+
+def _select_bm25_sweep_cell(
+    cells: Sequence[Bm25SweepCell],
+) -> tuple[Bm25SweepCell, str]:
+    if not cells:
+        raise ValueError("BM25 sweep produced no cells.")
+
+    best_ndcg = max(cell.ndcg_at_4 for cell in cells)
+    ndcg_winners = [
+        cell for cell in cells if _metrics_tied(cell.ndcg_at_4, best_ndcg)
+    ]
+    best_mrr = max(cell.mrr for cell in ndcg_winners)
+    winners = [cell for cell in ndcg_winners if _metrics_tied(cell.mrr, best_mrr)]
+    if len(winners) == 1:
+        winner = winners[0]
+        if len(ndcg_winners) == 1:
+            reason = "unique maximum macro nDCG@4"
+        else:
+            reason = "tied macro nDCG@4; unique maximum MRR"
+        return winner, reason
+
+    standard = next(
+        (
+            cell
+            for cell in winners
+            if cell.k1 == BM25_STANDARD_K1 and cell.b == BM25_STANDARD_B
+        ),
+        None,
+    )
+    if standard is not None:
+        return (
+            standard,
+            "tied macro nDCG@4 and MRR; retained standard empirical "
+            "baseline k1=1.5, b=0.75",
+        )
+    standard_cell = next(
+        cell
+        for cell in cells
+        if cell.k1 == BM25_STANDARD_K1 and cell.b == BM25_STANDARD_B
+    )
+    return (
+        standard_cell,
+        "multiple non-default cells tied on nDCG@4 and MRR; retained "
+        "k1=1.5, b=0.75 rather than picking by grid order",
+    )
+
+
+def _format_sweep_console(
+    cells: Sequence[Bm25SweepCell],
+    selected: Bm25SweepCell,
+    reason: str,
+    query_count: int,
+    labeled_count: int,
+) -> str:
+    lines = [
+        "BM25 parameter sweep (in-sample calibration)",
+        f"Queries: {query_count}. Labeled relevant occurrences: {labeled_count}.",
+        "Primary metric: macro nDCG@4. Tie-breaker: MRR. P@4 is reported only.",
+        "Exact BM25 (use_champions=False). Single throwaway keyword index; no embeddings.",
+        "",
+        f"{'k1':>5} {'b':>6} {'nDCG@4':>8} {'MRR':>8} {'P@4':>8} "
+        f"{'r1':>4} {'r2':>4} {'r3':>4} {'r4':>4} {'miss':>5}",
+        "-" * 66,
+    ]
+    for cell in cells:
+        marker = " *" if cell is selected else "  "
+        lines.append(
+            f"{cell.k1:5.1f} {cell.b:6.2f} {cell.ndcg_at_4:8.3f} {cell.mrr:8.3f} "
+            f"{cell.p_at_4:8.3f} {cell.rank_1:4d} {cell.rank_2:4d} {cell.rank_3:4d} "
+            f"{cell.rank_4:4d} {cell.missed:5d}{marker}"
+        )
+    lines.append("")
+    lines.append(
+        f"Selected k1={selected.k1:.1f}, b={selected.b:.2f} ({reason})."
+    )
+    lines.append("")
+    return "\n".join(lines)
+
+
+def _format_sweep_markdown(
+    cells: Sequence[Bm25SweepCell],
+    selected: Bm25SweepCell,
+    reason: str,
+    query_count: int,
+    labeled_count: int,
+) -> str:
+    unique_ndcg = len({round(cell.ndcg_at_4, 12) for cell in cells})
+    unique_mrr = len({round(cell.mrr, 12) for cell in cells})
+    unique_p = len({round(cell.p_at_4, 12) for cell in cells})
+    winner_count = sum(
+        1
+        for cell in cells
+        if _metrics_tied(cell.ndcg_at_4, selected.ndcg_at_4)
+        and _metrics_tied(cell.mrr, selected.mrr)
+    )
+    loser_count = len(cells) - winner_count
+    grid_is_flat = unique_ndcg == 1 and unique_mrr == 1
+
+    lines = [
+        BM25_SWEEP_HEADING,
+        "",
+        "This section calibrates Okapi BM25 `k1` and `b` on the **same**",
+        "12-query gold set used above. It is **in-sample calibration**, not an",
+        "independent test: the same queries both select and report the",
+        "parameters. The selected pair is not evidence of generalization",
+        "beyond this set.",
+        "",
+        "**Optimized metric:** macro nDCG@4 (mean over all 12 gold queries,",
+        "including the empty-relevant true-negative query).",
+        "**Tie-breaker:** MRR (same 12-query mean).",
+        "**Reported, non-selecting:** P@4. With four corpus documents and",
+        "`top_k=4`, P@4 moves only when BM25 returns fewer than four",
+        "candidates. Reordering alone never changes it, so it cannot rank",
+        "parameter pairs.",
+        "",
+        "Grid: `k1 ∈ {0.9, 1.2, 1.5, 2.0}` × `b ∈ {0.3, 0.5, 0.75, 1.0}`",
+        "(16 cells, evaluated in that order). One throwaway inverted index",
+        "was built from `backend/evaluation/corpus/` and reused for every",
+        "cell. No embeddings and no Chroma collection were built. Scoring",
+        "used exact BM25 (`use_champions=False`). Temporary stores were",
+        "deleted on exit.",
+        "",
+        f"Labeled relevant occurrences counted below: **{labeled_count}**",
+        f"across **{query_count}** queries (the empty-relevant query",
+        "contributes none). Rank columns are **counts**, not rates.",
+        "",
+        "### Full grid",
+        "",
+        "| k1 | b | nDCG@4 | MRR | P@4 | rank 1 | rank 2 | rank 3 | rank 4 | missed |",
+        "| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+    ]
+    for cell in cells:
+        lines.append(
+            f"| {cell.k1:.1f} | {cell.b:.2f} | {cell.ndcg_at_4:.3f} | "
+            f"{cell.mrr:.3f} | {cell.p_at_4:.3f} | {cell.rank_1} | "
+            f"{cell.rank_2} | {cell.rank_3} | {cell.rank_4} | {cell.missed} |"
+        )
+    lines.extend(
+        [
+            "",
+            "### Selection",
+            "",
+            f"Distinct nDCG@4 values in the grid: {unique_ndcg}. "
+            f"Distinct MRR values: {unique_mrr}. "
+            f"Distinct P@4 values: {unique_p}.",
+            "",
+        ]
+    )
+    if unique_p == 1:
+        lines.append(
+            f"P@4 is {selected.p_at_4:.3f} in every cell, so it cannot rank "
+            "parameter pairs."
+        )
+        lines.append("")
+    if grid_is_flat:
+        lines.append(
+            "The grid is flat on the optimized metric and the tie-breaker: "
+            "every cell has the same macro nDCG@4 and the same MRR. "
+            "A flat grid published as evidence is a complete and correct "
+            "outcome."
+        )
+        lines.append("")
+    else:
+        lines.append(
+            f"{winner_count} of {len(cells)} cells share the winning macro "
+            f"nDCG@4 ({selected.ndcg_at_4:.3f}) and MRR ({selected.mrr:.3f}). "
+            f"{loser_count} cells are strictly worse on both metrics."
+        )
+        lines.append("")
+    lines.append(
+        f"**Selected:** `k1={selected.k1:.1f}`, `b={selected.b:.2f}` "
+        f"({reason})."
+    )
+    lines.append("")
+    lines.append(
+        "These values are the finetuned defaults "
+        "(`MIR_BM25_FINETUNED_K1` / `MIR_BM25_FINETUNED_B`)."
+    )
+    lines.append("")
+    return "\n".join(lines)
+
+
+def _run_bm25_sweep() -> int:
+    documents = _load_corpus()
+    queries = _load_gold()
+    labeled_count = sum(len(gold.relevant_files) for gold in queries)
+    workdir = Path(tempfile.mkdtemp(prefix="mir-bm25-sweep-"))
+    try:
+        keyword_index = _build_keyword_index_only(documents, workdir)
+        cells = [
+            _evaluate_bm25_cell(keyword_index, queries, k1, b)
+            for k1 in BM25_SWEEP_K1_VALUES
+            for b in BM25_SWEEP_B_VALUES
+        ]
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)
+
+    selected, reason = _select_bm25_sweep_cell(cells)
+    console = _format_sweep_console(
+        cells,
+        selected,
+        reason,
+        query_count=len(queries),
+        labeled_count=labeled_count,
+    )
+    markdown = _format_sweep_markdown(
+        cells,
+        selected,
+        reason,
+        query_count=len(queries),
+        labeled_count=labeled_count,
+    )
+    print(console, end="")
+    _write_results_file(sweep_markdown=markdown)
+    print(f"Wrote sweep section in {RESULTS_PATH.relative_to(BACKEND_ROOT)}")
+    return 0
+
+
+def _run_full_evaluation() -> int:
     documents = _load_corpus()
     queries = _load_gold()
     settings = Settings()
@@ -554,9 +892,31 @@ def main() -> int:
 
     console, markdown = _print_and_collect(queries, per_query)
     print(console, end="")
-    RESULTS_PATH.write_text(markdown, encoding="utf-8", newline="\r\n")
+    _write_results_file(core_markdown=markdown)
     print(f"Wrote {RESULTS_PATH.relative_to(BACKEND_ROOT)}")
     return 0
+
+
+def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Offline retrieval evaluation independent of live app data.",
+    )
+    parser.add_argument(
+        "--sweep-bm25",
+        action="store_true",
+        help=(
+            "Calibrate BM25 k1/b on the gold set using one throwaway keyword "
+            "index and no embeddings."
+        ),
+    )
+    return parser.parse_args(argv)
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    args = _parse_args(argv)
+    if args.sweep_bm25:
+        return _run_bm25_sweep()
+    return _run_full_evaluation()
 
 
 if __name__ == "__main__":

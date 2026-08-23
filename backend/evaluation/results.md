@@ -188,3 +188,62 @@ Macro-mean over 6 vocabulary-mismatch queries (empty-relevant queries excluded).
 
 nDCG@4 uses binary relevance. Empty-relevant-set queries are omitted from both macro-averages.
 
+## BM25 parameter sweep (in-sample calibration)
+
+This section calibrates Okapi BM25 `k1` and `b` on the **same**
+12-query gold set used above. It is **in-sample calibration**, not an
+independent test: the same queries both select and report the
+parameters. The selected pair is not evidence of generalization
+beyond this set.
+
+**Optimized metric:** macro nDCG@4 (mean over all 12 gold queries,
+including the empty-relevant true-negative query).
+**Tie-breaker:** MRR (same 12-query mean).
+**Reported, non-selecting:** P@4. With four corpus documents and
+`top_k=4`, P@4 moves only when BM25 returns fewer than four
+candidates. Reordering alone never changes it, so it cannot rank
+parameter pairs.
+
+Grid: `k1 ∈ {0.9, 1.2, 1.5, 2.0}` × `b ∈ {0.3, 0.5, 0.75, 1.0}`
+(16 cells, evaluated in that order). One throwaway inverted index
+was built from `backend/evaluation/corpus/` and reused for every
+cell. No embeddings and no Chroma collection were built. Scoring
+used exact BM25 (`use_champions=False`). Temporary stores were
+deleted on exit.
+
+Labeled relevant occurrences counted below: **14**
+across **12** queries (the empty-relevant query
+contributes none). Rank columns are **counts**, not rates.
+
+### Full grid
+
+| k1 | b | nDCG@4 | MRR | P@4 | rank 1 | rank 2 | rank 3 | rank 4 | missed |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 0.9 | 0.30 | 0.886 | 0.875 | 0.292 | 10 | 4 | 0 | 0 | 0 |
+| 0.9 | 0.50 | 0.886 | 0.875 | 0.292 | 10 | 4 | 0 | 0 | 0 |
+| 0.9 | 0.75 | 0.886 | 0.875 | 0.292 | 10 | 4 | 0 | 0 | 0 |
+| 0.9 | 1.00 | 0.886 | 0.875 | 0.292 | 10 | 4 | 0 | 0 | 0 |
+| 1.2 | 0.30 | 0.917 | 0.917 | 0.292 | 11 | 3 | 0 | 0 | 0 |
+| 1.2 | 0.50 | 0.917 | 0.917 | 0.292 | 11 | 3 | 0 | 0 | 0 |
+| 1.2 | 0.75 | 0.917 | 0.917 | 0.292 | 11 | 3 | 0 | 0 | 0 |
+| 1.2 | 1.00 | 0.886 | 0.875 | 0.292 | 10 | 4 | 0 | 0 | 0 |
+| 1.5 | 0.30 | 0.917 | 0.917 | 0.292 | 11 | 3 | 0 | 0 | 0 |
+| 1.5 | 0.50 | 0.917 | 0.917 | 0.292 | 11 | 3 | 0 | 0 | 0 |
+| 1.5 | 0.75 | 0.917 | 0.917 | 0.292 | 11 | 3 | 0 | 0 | 0 |
+| 1.5 | 1.00 | 0.917 | 0.917 | 0.292 | 11 | 3 | 0 | 0 | 0 |
+| 2.0 | 0.30 | 0.917 | 0.917 | 0.292 | 11 | 3 | 0 | 0 | 0 |
+| 2.0 | 0.50 | 0.917 | 0.917 | 0.292 | 11 | 3 | 0 | 0 | 0 |
+| 2.0 | 0.75 | 0.917 | 0.917 | 0.292 | 11 | 3 | 0 | 0 | 0 |
+| 2.0 | 1.00 | 0.917 | 0.917 | 0.292 | 11 | 3 | 0 | 0 | 0 |
+
+### Selection
+
+Distinct nDCG@4 values in the grid: 2. Distinct MRR values: 2. Distinct P@4 values: 1.
+
+P@4 is 0.292 in every cell, so it cannot rank parameter pairs.
+
+11 of 16 cells share the winning macro nDCG@4 (0.917) and MRR (0.917). 5 cells are strictly worse on both metrics.
+
+**Selected:** `k1=1.5`, `b=0.75` (tied macro nDCG@4 and MRR; retained standard empirical baseline k1=1.5, b=0.75).
+
+These values are the finetuned defaults (`MIR_BM25_FINETUNED_K1` / `MIR_BM25_FINETUNED_B`).

@@ -63,6 +63,8 @@ class Settings(BaseSettings):
     rerank_enabled_default: bool = False
     rag_min_retrieval_score: float = Field(default=0.30, ge=0.0, le=1.0)
     rag_max_sentences_per_citation_group: int = Field(default=2, ge=1, le=8)
+    bm25_finetuned_k1: float = Field(default=1.5, gt=0.0, le=10.0)
+    bm25_finetuned_b: float = Field(default=0.75, ge=0.0, le=1.0)
 
     max_upload_size_mb: int = 25
     chunk_size: int = 500

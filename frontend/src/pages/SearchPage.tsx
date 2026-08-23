@@ -11,6 +11,7 @@ import {
 } from "../api/client";
 import type {
   AbstentionReason,
+  Bm25Mode,
   KeywordSearchResult,
   PrfExpansion,
   RagCitedChunk,
@@ -24,6 +25,12 @@ import { formatLatency, formatScore } from "../lib/format";
 
 type Algorithm = "tfidf" | "bm25" | "semantic" | "rag";
 type LlmProvider = "ollama" | "gemini";
+
+const BM25_MODES: { id: Bm25Mode; label: string }[] = [
+  { id: "default", label: "Default (k1=1.5, b=0.75)" },
+  { id: "tunable", label: "Tunable" },
+  { id: "finetuned", label: "Finetuned" },
+];
 
 type DisplayHit = {
   chunk_id: string;
@@ -783,7 +790,8 @@ function RagResults({
 }
 
 // Search UI: dispatches TF-IDF, BM25, semantic, and RAG; exposes PRF,
-// BM25 k1/b, query rewriting, and the cross-encoder reranker as toggles.
+// BM25 modes (default / tunable / finetuned), query rewriting, and the
+// cross-encoder reranker as toggles.
 export function SearchPage() {
   const [query, setQuery] = useState("");
   const [algorithm, setAlgorithm] = useState<Algorithm>("tfidf");
@@ -796,6 +804,12 @@ export function SearchPage() {
   const [ragTopK, setRagTopK] = useState(4);
   const [k1, setK1] = useState(1.5);
   const [b, setB] = useState(0.75);
+  const [bm25Mode, setBm25Mode] = useState<Bm25Mode>("default");
+  const [bm25Effective, setBm25Effective] = useState<{
+    mode: Bm25Mode;
+    k1: number;
+    b: number;
+  } | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [hits, setHits] = useState<DisplayHit[] | null>(null);
@@ -815,6 +829,7 @@ export function SearchPage() {
     setHighlightedCitation(null);
     setElapsedMs(null);
     setResultCount(null);
+    setBm25Effective(null);
   }
 
   function jumpToCitation(citationNumber: number) {
@@ -854,12 +869,19 @@ export function SearchPage() {
         const response = await searchBm25({
           q: trimmed,
           top_k: topK,
-          k1,
-          b,
+          bm25_mode: bm25Mode,
+          ...(bm25Mode === "tunable" ? { k1, b } : {}),
         });
         setHits(toKeywordHits(response.results));
         setElapsedMs(response.elapsed_ms);
         setResultCount(response.result_count);
+        if (response.bm25_mode !== null) {
+          setBm25Effective({
+            mode: response.bm25_mode,
+            k1: response.k1,
+            b: response.b,
+          });
+        }
       } else if (algorithm === "semantic") {
         const response = await searchSemantic({ q: trimmed, top_k: topK });
         setHits(toSemanticHits(response.results));
@@ -938,6 +960,38 @@ export function SearchPage() {
             </label>
           ))}
         </fieldset>
+
+        {algorithm === "bm25" ? (
+          <fieldset className="flex flex-wrap gap-2">
+            <legend className="mb-1 w-full text-sm text-ink-soft">
+              BM25 parameters
+            </legend>
+            {BM25_MODES.map((option) => (
+              <label
+                key={option.id}
+                className={[
+                  "cursor-pointer rounded-full border px-4 py-2 text-sm font-medium",
+                  bm25Mode === option.id
+                    ? "border-burgundy bg-burgundy text-paper"
+                    : "border-rule bg-card text-ink hover:border-burgundy/40",
+                ].join(" ")}
+              >
+                <input
+                  type="radio"
+                  name="bm25-mode"
+                  value={option.id}
+                  checked={bm25Mode === option.id}
+                  onChange={() => {
+                    setBm25Mode(option.id);
+                    setBm25Effective(null);
+                  }}
+                  className="sr-only"
+                />
+                {option.label}
+              </label>
+            ))}
+          </fieldset>
+        ) : null}
 
         {algorithm === "tfidf" ? (
           <label className="flex cursor-pointer items-center gap-2 text-sm text-ink">
@@ -1036,7 +1090,7 @@ export function SearchPage() {
                   className="w-full rounded-lg border border-rule bg-paper px-3 py-2"
                 />
               </label>
-              {algorithm === "bm25" ? (
+              {algorithm === "bm25" && bm25Mode === "tunable" ? (
                 <>
                   <label className="text-sm">
                     <span className="mb-1 block text-ink-soft">k1</span>
@@ -1063,6 +1117,13 @@ export function SearchPage() {
                     />
                   </label>
                 </>
+              ) : null}
+              {algorithm === "bm25" && bm25Mode !== "tunable" ? (
+                <p className="text-sm text-ink-soft sm:col-span-2">
+                  {bm25Mode === "default"
+                    ? "Default mode always scores with k1=1.5 and b=0.75. Request k1/b are ignored."
+                    : "Finetuned mode uses MIR_BM25_FINETUNED_K1 and MIR_BM25_FINETUNED_B on the server. Request k1/b are ignored."}
+                </p>
               ) : null}
             </div>
           ) : null}
@@ -1102,6 +1163,12 @@ export function SearchPage() {
           {(resultCount ?? hits.length) === 1 ? "" : "s"} for “{submittedQuery}”
           {" · "}
           {formatLatency(elapsedMs)}
+          {algorithm === "bm25" && bm25Effective ? (
+            <>
+              {" · "}
+              {bm25Effective.mode} · k1={bm25Effective.k1} · b={bm25Effective.b}
+            </>
+          ) : null}
         </p>
       ) : null}
 

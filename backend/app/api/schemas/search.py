@@ -4,6 +4,8 @@ from typing import Literal
 
 from pydantic import BaseModel
 
+Bm25Mode = Literal["default", "tunable", "finetuned"]
+
 
 class KeywordSearchResult(BaseModel):
     """One ranked TF-IDF chunk with citation and scoring evidence."""
@@ -53,6 +55,7 @@ class BM25SearchResponse(BaseModel):
 
     query: str
     mode: Literal["bm25"] = "bm25"
+    bm25_mode: Bm25Mode | None = None
     k1: float
     b: float
     result_count: int
