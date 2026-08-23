@@ -303,6 +303,7 @@ That is the scale at which PRF and semantic search are visible here. A larger, m
 - **Older uploads** indexed before page-spanning chunks keep the old one-page-per-chunk split until re-uploaded.
 - **LLM:** Ollama is default; Gemini needs `MIR_GEMINI_API_KEY`. Retrieval is unchanged.
 - **RAG grounding:** Successful answers go through a same-model grounding rewrite; each accepted citation group of at most two factual sentences must end with an in-range citation, and verifier failure abstains. Same-model verification is best-effort and is not a formal entailment guarantee—hallucinations remain possible. Grounding verification adds one LLM call to successful RAG generation.
+- **RAG answer-relevance.** Grounding checks claim support, not whether the answer addresses the asked property. A supported but off-target answer (for example a related count instead of the specific one requested) can still be returned. A single-call structured verdict was attempted and did not close this gap without adding a second LLM call.
 - **RAG lexical false positives.** Hybrid retrieval admits some dense-weak, BM25-strong questions that have no answer in the corpus. Safe downstream abstention (`model_abstained`, `citation_failure`, or `grounding_failure`) is acceptable; an unsupported answer is not. Calibration of the coverage / IDF-coverage floors was on a small corpus, so phrasing changes can straddle the gate.
 - **Demo video** is the remaining submission item (section 10).
 
