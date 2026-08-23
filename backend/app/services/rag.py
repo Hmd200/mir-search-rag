@@ -3,17 +3,30 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, replace
 from time import perf_counter
 from typing import Literal
 
 from app.retrieval import TextAnalyzer
+from app.retrieval.hybrid import (
+    HYBRID_RETRIEVAL_K,
+    RetrievalSource,
+    fused_chunk_order,
+    is_lexically_strong,
+    lexical_coverages,
+    pinning_relative_bm25,
+    pinning_sort_key,
+    reciprocal_rank_fusion,
+    retrieval_sources,
+)
 from app.retrieval.llm import LLMClient, LLMError, strip_think_blocks
 from app.retrieval.reranker import CrossEncoderReranker, reranker_from_settings
 from app.services.semantic_search import (
     SemanticSearchRecord,
     SemanticSearchService,
 )
+from app.storage.keyword_index import KeywordIndex, KeywordSearchHit
 
 AbstentionReason = Literal[
     "no_context",
@@ -23,7 +36,7 @@ AbstentionReason = Literal[
     "grounding_failure",
 ]
 
-_RETRIEVAL_K = 20
+_RETRIEVAL_K = HYBRID_RETRIEVAL_K
 _CITATION = re.compile(r"\[n?(\d+)\]")
 _ABSTAIN_TEXT = "INSUFFICIENT_EVIDENCE"
 _LEXICAL_EVIDENCE_ANALYZER = TextAnalyzer(min_token_length=1)
@@ -167,6 +180,10 @@ class RagCitedChunk:
     score: float
     retrieval_score: float
     rerank_score: float | None
+    dense_score: float | None = None
+    bm25_score: float | None = None
+    fusion_score: float | None = None
+    retrieval_sources: tuple[RetrievalSource, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -182,10 +199,14 @@ class RagContextChunk:
     text: str
     retrieval_score: float
     rerank_score: float | None
+    dense_score: float | None = None
+    bm25_score: float | None = None
+    fusion_score: float | None = None
+    retrieval_sources: tuple[RetrievalSource, ...] = ()
 
     @property
     def score(self) -> float:
-        """Alias of retrieval_score, not the cross-encoder rerank score."""
+        """Ordering score for the reranker; never a missing dense/BM25 field."""
 
         return self.retrieval_score
 
@@ -238,6 +259,18 @@ def _build_context(records: list[RagContextChunk]) -> str:
     )
 
 
+def _searchable_text(record: RagContextChunk) -> str:
+    return "\n".join(
+        part
+        for part in (
+            record.document_title,
+            record.section_title,
+            _strip_prompt_citation_markers(record.text),
+        )
+        if part
+    )
+
+
 def _has_direct_lexical_evidence(
     query: str,
     records: list[RagContextChunk],
@@ -249,16 +282,7 @@ def _has_direct_lexical_evidence(
         return False
 
     for record in records:
-        searchable_text = "\n".join(
-            part
-            for part in (
-                record.document_title,
-                record.section_title,
-                _strip_prompt_citation_markers(record.text),
-            )
-            if part
-        )
-        chunk_terms = set(_LEXICAL_EVIDENCE_ANALYZER.analyze(searchable_text))
+        chunk_terms = set(_LEXICAL_EVIDENCE_ANALYZER.analyze(_searchable_text(record)))
         if query_terms <= chunk_terms:
             return True
     return False
@@ -652,16 +676,19 @@ def _cited_chunks(
                 score=record.retrieval_score,
                 retrieval_score=record.retrieval_score,
                 rerank_score=record.rerank_score,
+                dense_score=record.dense_score,
+                bm25_score=record.bm25_score,
+                fusion_score=record.fusion_score,
+                retrieval_sources=record.retrieval_sources,
             )
         )
     return tuple(cited)
 
 
-def _to_context_chunk(
+def _dense_only_context(
     record: SemanticSearchRecord,
     *,
-    retrieval_score: float,
-    rerank_score: float | None,
+    rerank_score: float | None = None,
 ) -> RagContextChunk:
     return RagContextChunk(
         chunk_id=record.chunk_id,
@@ -671,9 +698,27 @@ def _to_context_chunk(
         page_end=record.page_end,
         section_title=record.section_title,
         text=record.text,
-        retrieval_score=retrieval_score,
+        retrieval_score=record.score,
         rerank_score=rerank_score,
+        dense_score=record.score,
+        bm25_score=None,
+        fusion_score=None,
+        retrieval_sources=("dense",),
     )
+
+
+def _as_context_chunks(
+    retrieved: list[SemanticSearchRecord] | list[RagContextChunk],
+) -> list[RagContextChunk]:
+    if not retrieved:
+        return []
+    if isinstance(retrieved[0], RagContextChunk):
+        return [chunk for chunk in retrieved if isinstance(chunk, RagContextChunk)]
+    return [
+        _dense_only_context(record)
+        for record in retrieved
+        if isinstance(record, SemanticSearchRecord)
+    ]
 
 
 class RagService:
@@ -688,6 +733,11 @@ class RagService:
         max_sentences_per_citation_group: int = (
             _DEFAULT_MAX_SENTENCES_PER_CITATION_GROUP
         ),
+        keyword_index: KeywordIndex | None = None,
+        bm25_k1: float | None = None,
+        bm25_b: float | None = None,
+        lexical_coverage_min: float = 0.60,
+        lexical_idf_coverage_min: float = 0.40,
     ) -> None:
         if not 0.0 <= min_retrieval_score <= 1.0:
             raise ValueError(
@@ -697,11 +747,30 @@ class RagService:
             raise ValueError(
                 "max_sentences_per_citation_group must be at least 1."
             )
+        if not 0.0 <= lexical_coverage_min <= 1.0:
+            raise ValueError(
+                "lexical_coverage_min must be between 0.0 and 1.0 inclusive."
+            )
+        if not 0.0 <= lexical_idf_coverage_min <= 1.0:
+            raise ValueError(
+                "lexical_idf_coverage_min must be between 0.0 and 1.0 inclusive."
+            )
+        if keyword_index is not None and (bm25_k1 is None or bm25_b is None):
+            raise ValueError(
+                "Finetuned BM25 k1 and b are required when hybrid retrieval "
+                "is wired."
+            )
         self._search = search
         self._llm = llm
         self._reranker = reranker
         self._min_retrieval_score = min_retrieval_score
         self._max_sentences_per_citation_group = max_sentences_per_citation_group
+        self._keyword_index = keyword_index
+        self._bm25_k1 = bm25_k1
+        self._bm25_b = bm25_b
+        self._lexical_coverage_min = lexical_coverage_min
+        self._lexical_idf_coverage_min = lexical_idf_coverage_min
+        self._lexical_arm_scores: tuple[float, ...] = ()
         self._system_prompt = build_system_prompt(max_sentences_per_citation_group)
         self._retry_prompt = build_retry_prompt(max_sentences_per_citation_group)
         self._grounding_system_prompt = build_grounding_system_prompt(
@@ -721,6 +790,11 @@ class RagService:
             reranker=self._reranker,
             min_retrieval_score=self._min_retrieval_score,
             max_sentences_per_citation_group=self._max_sentences_per_citation_group,
+            keyword_index=self._keyword_index,
+            bm25_k1=self._bm25_k1,
+            bm25_b=self._bm25_b,
+            lexical_coverage_min=self._lexical_coverage_min,
+            lexical_idf_coverage_min=self._lexical_idf_coverage_min,
         )
 
     def _ensure_reranker(self) -> CrossEncoderReranker:
@@ -731,7 +805,7 @@ class RagService:
     def select_context(
         self,
         query: str,
-        retrieved: list[SemanticSearchRecord],
+        retrieved: list[SemanticSearchRecord] | list[RagContextChunk],
         *,
         top_k: int,
         use_reranker: bool = False,
@@ -740,38 +814,223 @@ class RagService:
 
         Without reranking this is a prefix slice. When enabled, the same
         cut is a cross-encoder rerank then take top-N — not a second
-        retrieval path.
+        retrieval path. Reranked rows are re-associated by chunk_id so
+        hybrid provenance survives reconstruction.
         """
 
-        if not retrieved or top_k <= 0:
+        candidates = _as_context_chunks(retrieved)
+        if not candidates or top_k <= 0:
             return []
 
         if not use_reranker:
-            return [
-                _to_context_chunk(
-                    record,
-                    retrieval_score=record.score,
-                    rerank_score=None,
-                )
-                for record in retrieved[:top_k]
-            ]
+            return candidates[:top_k]
 
         ranked = self._ensure_reranker().rerank(
             query,
-            retrieved,
+            candidates,
             top_n=top_k,
         )
+        by_id = {record.chunk_id: record for record in candidates}
         selected: list[RagContextChunk] = []
         for item in ranked:
-            record = item.chunk
-            selected.append(
-                _to_context_chunk(
-                    record,
-                    retrieval_score=item.retrieval_score,
-                    rerank_score=item.rerank_score,
+            original = by_id.get(getattr(item.chunk, "chunk_id", ""))
+            if original is None:
+                continue
+            selected.append(replace(original, rerank_score=item.rerank_score))
+        return selected
+
+    def _records_for_ids(
+        self,
+        chunk_ids: list[str],
+    ) -> dict[str, SemanticSearchRecord]:
+        lookup = getattr(self._search, "records_for_ids", None)
+        if lookup is None:
+            return {}
+        return lookup(chunk_ids)
+
+    def _query_term_idfs(self, query: str) -> dict[str, float] | None:
+        if self._keyword_index is None:
+            return None
+        terms = frozenset(_LEXICAL_EVIDENCE_ANALYZER.analyze(query))
+        if not terms:
+            return {}
+        return {term: self._keyword_index.bm25_idf(term) for term in terms}
+
+    def _lexical_coverages_for(
+        self,
+        query: str,
+        record: RagContextChunk,
+        idf: Mapping[str, float] | None = None,
+    ) -> tuple[float, float] | None:
+        query_terms = frozenset(_LEXICAL_EVIDENCE_ANALYZER.analyze(query))
+        weights = idf
+        if weights is None:
+            if self._keyword_index is None:
+                return None
+            weights = {term: self._keyword_index.bm25_idf(term) for term in query_terms}
+        chunk_terms = frozenset(
+            _LEXICAL_EVIDENCE_ANALYZER.analyze(_searchable_text(record))
+        )
+        return lexical_coverages(query_terms, chunk_terms, weights)
+
+    def _is_formula_strong(
+        self,
+        query: str,
+        record: RagContextChunk,
+        idf: Mapping[str, float] | None = None,
+    ) -> bool:
+        coverages = self._lexical_coverages_for(query, record, idf)
+        if coverages is None:
+            return False
+        coverage, idf_coverage = coverages
+        return is_lexically_strong(
+            bm25_score=record.bm25_score,
+            coverage=coverage,
+            idf_coverage=idf_coverage,
+            coverage_min=self._lexical_coverage_min,
+            idf_coverage_min=self._lexical_idf_coverage_min,
+        )
+
+    def _passes_relevance_gate(
+        self,
+        query: str,
+        records: list[RagContextChunk],
+    ) -> bool:
+        if any(
+            record.dense_score is not None
+            and record.dense_score >= self._min_retrieval_score
+            for record in records
+        ):
+            return True
+        idf = self._query_term_idfs(query)
+        if any(self._is_formula_strong(query, record, idf) for record in records):
+            return True
+        return _has_direct_lexical_evidence(query, records)
+
+    def _pin_lexical_candidate(
+        self,
+        query: str,
+        pool: list[RagContextChunk],
+        selected: list[RagContextChunk],
+    ) -> list[RagContextChunk]:
+        if not selected or self._keyword_index is None:
+            return selected
+        idf = self._query_term_idfs(query)
+        if any(self._is_formula_strong(query, record, idf) for record in selected):
+            return selected
+        strong = [
+            record for record in pool if self._is_formula_strong(query, record, idf)
+        ]
+        if not strong:
+            return selected
+
+        lexical_scores: Sequence[float | None] = (
+            list(self._lexical_arm_scores)
+            if self._lexical_arm_scores
+            else [record.bm25_score for record in pool]
+        )
+        pin = min(
+            strong,
+            key=lambda record: pinning_sort_key(
+                idf_coverage=(
+                    self._lexical_coverages_for(query, record, idf) or (0.0, 0.0)
+                )[1],
+                relative_bm25=pinning_relative_bm25(
+                    record.bm25_score,
+                    lexical_scores,
+                ),
+                fusion_score=record.fusion_score,
+                chunk_id=record.chunk_id,
+            ),
+        )
+        selected_ids = {record.chunk_id for record in selected}
+        if pin.chunk_id in selected_ids:
+            return selected
+
+        pinned = list(selected)
+        for index in range(len(pinned) - 1, -1, -1):
+            if not self._is_formula_strong(query, pinned[index], idf):
+                pinned[index] = pin
+                break
+        return pinned
+
+    def _fuse_hybrid_candidates(
+        self,
+        dense_hits: list[SemanticSearchRecord],
+        bm25_hits: list[KeywordSearchHit],
+    ) -> list[RagContextChunk]:
+        scores = reciprocal_rank_fusion(
+            [hit.chunk_id for hit in dense_hits],
+            [hit.chunk_id for hit in bm25_hits],
+        )
+        ordered_ids = fused_chunk_order(scores, top_k=_RETRIEVAL_K)
+        dense_by_id = {hit.chunk_id: hit for hit in dense_hits}
+        bm25_by_id = {hit.chunk_id: hit for hit in bm25_hits}
+        missing = [
+            chunk_id
+            for chunk_id in ordered_ids
+            if chunk_id not in dense_by_id
+        ]
+        hydrated = self._records_for_ids(missing) if missing else {}
+
+        fused: list[RagContextChunk] = []
+        for chunk_id in ordered_ids:
+            dense = dense_by_id.get(chunk_id)
+            bm25 = bm25_by_id.get(chunk_id)
+            meta = dense if dense is not None else hydrated.get(chunk_id)
+            if meta is None:
+                continue
+            dense_score = dense.score if dense is not None else None
+            bm25_score = bm25.score if bm25 is not None else None
+            fusion_score = scores[chunk_id]
+            fused.append(
+                RagContextChunk(
+                    chunk_id=meta.chunk_id,
+                    document_id=meta.document_id,
+                    document_title=meta.document_title,
+                    page_start=meta.page_start,
+                    page_end=meta.page_end,
+                    section_title=meta.section_title,
+                    text=meta.text,
+                    retrieval_score=fusion_score,
+                    rerank_score=None,
+                    dense_score=dense_score,
+                    bm25_score=bm25_score,
+                    fusion_score=fusion_score,
+                    retrieval_sources=retrieval_sources(
+                        has_dense=dense is not None,
+                        has_bm25=bm25 is not None,
+                    ),
                 )
             )
-        return selected
+        return fused
+
+    def _retrieve_candidates(
+        self,
+        *,
+        original_query: str,
+        dense_query: str,
+    ) -> list[RagContextChunk]:
+        dense_hits = self._search.search(
+            dense_query,
+            top_k=_RETRIEVAL_K,
+        )
+        if self._keyword_index is None:
+            self._lexical_arm_scores = ()
+            return [_dense_only_context(hit) for hit in dense_hits]
+        if self._bm25_k1 is None or self._bm25_b is None:
+            raise ValueError(
+                "Finetuned BM25 k1 and b are required when hybrid retrieval "
+                "is wired."
+            )
+        bm25_hits = self._keyword_index.search_bm25(
+            original_query,
+            top_k=_RETRIEVAL_K,
+            k1=self._bm25_k1,
+            b=self._bm25_b,
+        )
+        self._lexical_arm_scores = tuple(hit.score for hit in bm25_hits)
+        return self._fuse_hybrid_candidates(dense_hits, bm25_hits)
 
     def rewrite_query(self, query: str) -> str:
         """Return a retrieval query, or the original on empty/failed rewrite."""
@@ -815,7 +1074,7 @@ class RagService:
         use_reranker: bool = False,
         use_query_rewrite: bool = False,
     ) -> RagOutcome:
-        """Rewrite (optional), retrieve 20, rerank (optional), then generate.
+        """Rewrite (optional), hybrid-retrieve 20, rerank (optional), then generate.
 
         Generation always uses the original question. Invalid [n] markers
         are stripped; cited_chunks follow first-appearance order.
@@ -830,9 +1089,9 @@ class RagService:
             retrieval_query = self.rewrite_query(query)
             rewritten_query = retrieval_query
 
-        retrieved = self._search.search(
-            retrieval_query,
-            top_k=_RETRIEVAL_K,
+        retrieved = self._retrieve_candidates(
+            original_query=query,
+            dense_query=retrieval_query,
         )
         # Existing top-20 -> top-N narrowing; rerank replaces the slice.
         # Rerank against the original question so the prompt stays on-intent.
@@ -841,6 +1100,11 @@ class RagService:
             retrieved,
             top_k=top_k,
             use_reranker=use_reranker,
+        )
+        context_records = self._pin_lexical_candidate(
+            query,
+            retrieved,
+            context_records,
         )
         context = tuple(context_records)
 
@@ -857,13 +1121,7 @@ class RagService:
                 abstention_reason="no_context",
             )
 
-        best_retrieval_score = max(
-            record.retrieval_score for record in context_records
-        )
-        if (
-            best_retrieval_score < self._min_retrieval_score
-            and not _has_direct_lexical_evidence(query, context_records)
-        ):
+        if not self._passes_relevance_gate(query, context_records):
             return RagOutcome(
                 query=query,
                 answer=_ABSTAIN_TEXT,

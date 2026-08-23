@@ -39,8 +39,17 @@ def _record(index: int) -> SemanticSearchRecord:
 
 
 class FakeSearch:
-    def __init__(self, records: list[SemanticSearchRecord]) -> None:
+    def __init__(
+        self,
+        records: list[SemanticSearchRecord],
+        *,
+        catalog: list[SemanticSearchRecord] | None = None,
+    ) -> None:
         self._records = records
+        self._catalog = {
+            record.chunk_id: record
+            for record in (catalog if catalog is not None else records)
+        }
         self.queries: list[str] = []
 
     def search(
@@ -51,6 +60,16 @@ class FakeSearch:
     ) -> list[SemanticSearchRecord]:
         self.queries.append(query)
         return self._records[:top_k]
+
+    def records_for_ids(
+        self,
+        chunk_ids: list[str],
+    ) -> dict[str, SemanticSearchRecord]:
+        return {
+            chunk_id: self._catalog[chunk_id]
+            for chunk_id in chunk_ids
+            if chunk_id in self._catalog
+        }
 
 
 class FakeLLM:

@@ -660,6 +660,10 @@ function CitedAnswer({
   );
 }
 
+function formatOptionalScore(value: number | null | undefined): string {
+  return value == null ? "n/a" : formatScore(value);
+}
+
 function CitedChunkCard({
   citationNumber,
   chunk,
@@ -688,11 +692,20 @@ function CitedChunkCard({
           <p className="text-sm text-ink-soft">
             {formatPageRange(chunk.page_start, chunk.page_end) ?? "Page unknown"}
             {" · "}
-            Retrieval {formatScore(chunk.retrieval_score)}
+            Dense {formatOptionalScore(chunk.dense_score)}
+            {" · "}
+            BM25 {formatOptionalScore(chunk.bm25_score)}
+            {" · "}
+            RRF {formatOptionalScore(chunk.fusion_score)}
             {chunk.rerank_score !== null
               ? ` · Rerank ${formatScore(chunk.rerank_score)}`
               : ""}
           </p>
+          {chunk.retrieval_sources.length > 0 ? (
+            <p className="text-xs text-ink-soft">
+              Sources: {chunk.retrieval_sources.join(", ")}
+            </p>
+          ) : null}
         </div>
       </div>
       <p className="mt-3 whitespace-pre-wrap text-sm leading-relaxed text-ink">

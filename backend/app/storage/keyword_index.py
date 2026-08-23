@@ -319,6 +319,27 @@ class KeywordIndex:
             1.0 + (chunk_count - document_frequency + 0.5) / (document_frequency + 0.5)
         )
 
+    def indexed_chunk_count(self) -> int:
+        """Return the number of chunks currently in the inverted index."""
+
+        with self._lock:
+            return len(self._chunks)
+
+    def document_frequency(self, term: str) -> int:
+        """Return df(term), or 0 when the term is out of vocabulary."""
+
+        with self._lock:
+            return len(self._postings.get(term, {}))
+
+    def bm25_idf(self, term: str) -> float:
+        """Lucene-style BM25 IDF, including OOV terms (df=0)."""
+
+        with self._lock:
+            return self._bm25_idf(
+                len(self._postings.get(term, {})),
+                len(self._chunks),
+            )
+
     def _recompute_document_norms(self) -> None:
         """Store L2 norms of each chunk's TF-IDF vector for cosine scoring."""
 

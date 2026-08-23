@@ -32,7 +32,7 @@ flowchart TD
   vsm["TF-IDF + optional PRF"]
   bm25["BM25"]
   sem["Semantic kNN"]
-  rag["Rewrite optional → retrieve → rerank optional → LLM + citations + grounding check"]
+  rag["Rewrite optional → hybrid retrieve (dense+BM25 RRF) → rerank optional → LLM + citations + grounding check"]
 
   src --> parse --> chunk
   chunk --> lex
@@ -40,12 +40,14 @@ flowchart TD
   ui --> vsm --> lex
   ui --> bm25 --> lex
   ui --> sem --> vec
-  ui --> rag --> vec
+  ui --> rag
+  rag --> vec
+  rag --> lex
 ```
 
 **Indexing.** An admin upload (PDF/DOCX) or public URL is parsed to text, split into overlapping word chunks (500 words, 75-word overlap), then written to both stores: a custom inverted index (tokenized, stop-word filtered, Porter-stemmed postings with term frequencies) and Chroma (dense vectors from `all-MiniLM-L6-v2`, plus chunk text and metadata). Add and delete go through one path. If the vector write fails after the keyword write (or the reverse on delete), the other index is rolled back so the two stores stay aligned.
 
-**Querying.** TF-IDF (optional Rocchio PRF) and BM25 score the inverted index. Semantic search embeds the query with the same encoder and retrieves nearest chunks from Chroma. RAG optionally rewrites the query for retrieval, takes the top chunks (optional cross-encoder rerank), asks the local LLM to answer with `[n]` citations, then runs a same-model grounding rewrite against the retrieved context. Each accepted citation group of at most two factual sentences must end with an in-range citation (a citation covers preceding sentences only); verifier failure causes safe abstention. Grounding verification adds one LLM call to successful RAG generation and is best-effort—not a formal entailment guarantee, and it does not make hallucinations impossible.
+**Querying.** TF-IDF (optional Rocchio PRF) and BM25 score the inverted index. Semantic search embeds the query with the same encoder and retrieves nearest chunks from Chroma. RAG optionally rewrites the query for the **dense** arm only, then always fuses dense top-20 with BM25 top-20 (finetuned `k1`/`b`, original user wording) by unweighted RRF (`k=60`). Optional cross-encoder rerank, generation, and grounding stay on the original question. Each accepted citation group of at most two factual sentences must end with an in-range citation (a citation covers preceding sentences only); verifier failure causes safe abstention. Grounding verification adds one LLM call to successful RAG generation and is best-effort—not a formal entailment guarantee, and it does not make hallucinations impossible.
 
 **Runtime layout** (created on first API start; gitignored except placeholders):
 
@@ -66,7 +68,7 @@ flowchart TD
 | **TF-IDF (VSM)** | Cosine over `(1 + log tf) × idf` on **both** query and document (SMART `ltc.ltc`) | Default search uses **champion lists** (top-50 postings per term by TF), then full postings if there are too few candidates. **Rocchio PRF** (`α=1`, `β=0.75`) is a UI toggle; expansion terms are shown as chips. |
 | **BM25** | Okapi BM25, Lucene IDF `ln(1 + (N−df+0.5)/(df+0.5))` | Three modes: **default** always uses `k1=1.5`, `b=0.75`; **tunable** uses request `k1`/`b`; **finetuned** uses `MIR_BM25_FINETUNED_K1` / `MIR_BM25_FINETUNED_B` (also `1.5` / `0.75` after an in-sample sweep that tied). The UI always sends the selected mode. The response reports the mode and the effective `k1`/`b`. |
 | **Semantic** | Cosine nearest neighbors in Chroma | Same encoder for documents and queries. |
-| **RAG** | Optional rewrite → semantic retrieve (20) → optional rerank → generate → same-model grounding verify | Prompt requires `[1]…[N]` citations. Fabricated markers are stripped. A successful cited draft is rewritten once against the retrieved context; each accepted group of at most two factual sentences must end with an in-range citation (configurable via `MIR_RAG_MAX_SENTENCES_PER_CITATION_GROUP`). Verifier failure (or empty/`INSUFFICIENT_EVIDENCE` output) abstains. Model may also abstain with `INSUFFICIENT_EVIDENCE` earlier. Grounding verification adds one LLM call to successful generation and is best-effort, not a formal entailment check. Rewrite changes **retrieval** only; generation still uses the original question. |
+| **RAG** | Optional rewrite → **hybrid retrieve** (dense top-20 + BM25 top-20, unweighted RRF `k=60`) → optional rerank → generate → same-model grounding verify | Dense rewrite is optional; BM25 and the lexical gate always use the original question. Prompt requires `[1]…[N]` citations. Fabricated markers are stripped. A successful cited draft is rewritten once against the retrieved context; each accepted group of at most two factual sentences must end with an in-range citation (configurable via `MIR_RAG_MAX_SENTENCES_PER_CITATION_GROUP`). The relevance gate admits a chunk if dense cosine ≥ `MIR_RAG_MIN_RETRIEVAL_SCORE` **or** BM25-backed lexical coverage/IDF-coverage (`MIR_RAG_LEXICAL_COVERAGE_MIN` / `MIR_RAG_LEXICAL_IDF_COVERAGE_MIN`) **or** the existing all-terms-present bypass. Verifier failure (or empty/`INSUFFICIENT_EVIDENCE` output) abstains. Model may also abstain with `INSUFFICIENT_EVIDENCE` earlier. Grounding verification adds one LLM call to successful generation and is best-effort, not a formal entailment check. |
 
 Lexical preprocessing: Unicode tokenization, stop-word removal, **Porter stemming**. Ranking is **per chunk**; the UI shows document title, score, and a snippet (with page range when known).
 
@@ -86,7 +88,7 @@ Lexical preprocessing: Unicode tokenization, stop-word removal, **Porter stemmin
 
 - **Web scraping (+5).** Admin URL field → `trafilatura` main-text extract → same dual-index path. SSRF guard (DNS + private/loopback IPs, including redirects), 10s timeout, 5 MB cap.
 - **Visualization (+5).** Graded term-contribution highlighting; TF-IDF/BM25 **keyword heatmap**; lexical/semantic **document-relation graph** (shared `matched_terms`, or score proximity when terms are absent). Click a node or heatmap row to jump to that result card.
-- **Advanced RAG (+5).** Optional **query rewrite** before retrieval (`rewritten_query` shown in the UI) and optional **cross-encoder rerank** (`cross-encoder/ms-marco-MiniLM-L-6-v2`). Cited chunks show retrieval score and rerank score.
+- **Advanced RAG (+5).** Optional **query rewrite** before dense retrieval (`rewritten_query` shown in the UI) and optional **cross-encoder rerank** (`cross-encoder/ms-marco-MiniLM-L-6-v2`). BM25 and the lexical gate always use the original question. Cited chunks show dense cosine, BM25, RRF fusion, and rerank scores (missing arms render as n/a, never 0.0).
 
 ---
 
@@ -224,10 +226,12 @@ All optional. `.env` is loaded from the **repository root**.
 | `MIR_MAX_UPLOAD_SIZE_MB` | `25` | Upload cap |
 | `MIR_CHUNK_SIZE` | `500` | Words per chunk |
 | `MIR_CHUNK_OVERLAP` | `75` | Overlap in words |
-| `MIR_RAG_MIN_RETRIEVAL_SCORE` | `0.30` | Minimum cosine similarity (`1 - distance`, clamped to `[0, 1]`) required of the best RAG context chunk before the LLM is called. Below this, RAG abstains with `INSUFFICIENT_EVIDENCE` while still returning the retrieved context for diagnostics. `0.30` is a conservative starting point—calibrate with relevant, irrelevant, and borderline queries from your corpus. |
+| `MIR_RAG_MIN_RETRIEVAL_SCORE` | `0.30` | Minimum **dense cosine** for the hybrid RAG relevance gate. A context set also passes if a BM25-backed chunk meets the lexical coverage floors, or if the all-terms-present bypass fires. Do not treat this as an RRF/fusion threshold. |
 | `MIR_RAG_MAX_SENTENCES_PER_CITATION_GROUP` | `2` | Maximum factual sentences a single terminal citation group may cover. A citation supports only the preceding sentences in its group, never following ones. `1` restores strict per-sentence citations. |
-| `MIR_BM25_FINETUNED_K1` | `1.5` | `k1` used when `GET /search/bm25` is called with `bm25_mode=finetuned`. Request `k1` is ignored. Selected by an in-sample nDCG@4 sweep on the 12-query eval gold set; the grid tied, so the standard empirical baseline was retained. |
-| `MIR_BM25_FINETUNED_B` | `0.75` | `b` used when `GET /search/bm25` is called with `bm25_mode=finetuned`. Request `b` is ignored. Same in-sample calibration as `MIR_BM25_FINETUNED_K1`. |
+| `MIR_RAG_LEXICAL_COVERAGE_MIN` | `0.60` | Hybrid RAG lexical gate: minimum unique-term overlap `\|Q ∩ C\| / \|Q\|` for a BM25-retrieved chunk. |
+| `MIR_RAG_LEXICAL_IDF_COVERAGE_MIN` | `0.40` | Hybrid RAG lexical gate: minimum IDF-weighted overlap of query terms present in the chunk. Out-of-vocabulary query terms stay in the denominator. |
+| `MIR_BM25_FINETUNED_K1` | `1.5` | `k1` for `bm25_mode=finetuned` and for the RAG hybrid BM25 arm. Request `k1` is ignored in finetuned mode. Selected by an in-sample nDCG@4 sweep on the 12-query eval gold set; the grid tied, so the standard empirical baseline was retained. |
+| `MIR_BM25_FINETUNED_B` | `0.75` | `b` for `bm25_mode=finetuned` and for the RAG hybrid BM25 arm. Request `b` is ignored in finetuned mode. Same in-sample calibration as `MIR_BM25_FINETUNED_K1`. |
 
 BM25 **default** mode is the standard empirical pair `k1=1.5`, `b=0.75` and ignores request `k1`/`b`. **Tunable** mode uses the request fields (query-param defaults remain `1.5`/`0.75`). Omitting `bm25_mode` preserves the previous API: request `k1`/`b` are used. PRF `α`/`β` and rerank remain request/UI parameters (or fields in `backend/app/core/config.py`).
 
@@ -299,7 +303,7 @@ That is the scale at which PRF and semantic search are visible here. A larger, m
 - **Older uploads** indexed before page-spanning chunks keep the old one-page-per-chunk split until re-uploaded.
 - **LLM:** Ollama is default; Gemini needs `MIR_GEMINI_API_KEY`. Retrieval is unchanged.
 - **RAG grounding:** Successful answers go through a same-model grounding rewrite; each accepted citation group of at most two factual sentences must end with an in-range citation, and verifier failure abstains. Same-model verification is best-effort and is not a formal entailment guarantee—hallucinations remain possible. Grounding verification adds one LLM call to successful RAG generation.
-- **RAG can false-abstain on strong vocabulary mismatch.** The relevance gate is not dense-score-only: it also has an exact-term lexical bypass that skips the `MIR_RAG_MIN_RETRIEVAL_SCORE` threshold when one retrieved chunk literally contains every meaningful query term. But that bypass only fires on verbatim overlap, so it doesn't help when the query's wording differs from the source's (e.g. querying "colour" when the chunk only says "navy"). In that case dense cosine similarity is the only remaining signal, and if it's weak the query abstains even though the fact is in the corpus and BM25 would have found it easily. This is a known dense-retrieval weakness, not a bug in the gate itself. Hybrid (BM25 + dense) retrieval is the standard fix but is not currently wired into the RAG route.
+- **RAG lexical false positives.** Hybrid retrieval admits some dense-weak, BM25-strong questions that have no answer in the corpus. Safe downstream abstention (`model_abstained`, `citation_failure`, or `grounding_failure`) is acceptable; an unsupported answer is not. Calibration of the coverage / IDF-coverage floors was on a small corpus, so phrasing changes can straddle the gate.
 - **Demo video** is the remaining submission item (section 10).
 
 ---

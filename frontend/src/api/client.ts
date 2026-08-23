@@ -131,6 +131,8 @@ export type KeywordSearchParams = {
   use_prf?: boolean;
 };
 
+export type RetrievalSource = "dense" | "bm25";
+
 export type RagCitedChunk = {
   chunk_id: string;
   document_id: string;
@@ -141,6 +143,10 @@ export type RagCitedChunk = {
   score: number;
   retrieval_score: number;
   rerank_score: number | null;
+  dense_score: number | null;
+  bm25_score: number | null;
+  fusion_score: number | null;
+  retrieval_sources: RetrievalSource[];
   prompt_index?: number | null;
 };
 

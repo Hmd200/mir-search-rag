@@ -4,6 +4,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+RetrievalSource = Literal["dense", "bm25"]
+
 
 class RagRequest(BaseModel):
     """JSON body for grounded answer generation."""
@@ -27,6 +29,10 @@ class RagCitedChunk(BaseModel):
     score: float
     retrieval_score: float
     rerank_score: float | None = None
+    dense_score: float | None = None
+    bm25_score: float | None = None
+    fusion_score: float | None = None
+    retrieval_sources: tuple[RetrievalSource, ...] = ()
     prompt_index: int | None = None
 
 

@@ -183,3 +183,13 @@ def test_invalid_bm25_tunables_are_rejected(
             k1=k1,
             b=b,
         )
+
+
+def test_bm25_idf_is_defined_for_oov_terms(tmp_path: Path) -> None:
+    index = KeywordIndex(tmp_path / "bm25-idf-oov.json")
+    index.upsert_document("document", [("chunk", "signal retrieval")])
+
+    assert index.document_frequency("signal") == 1
+    assert index.document_frequency("quokka") == 0
+    assert index.bm25_idf("quokka") > 0.0
+    assert index.indexed_chunk_count() == 1

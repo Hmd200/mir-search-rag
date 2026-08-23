@@ -5,23 +5,53 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
-from app.api.dependencies import get_embedding_provider, get_vector_store
+from app.api.dependencies import (
+    get_embedding_provider,
+    get_keyword_index,
+    get_vector_store,
+)
 from app.api.schemas.rag import RagCitedChunk, RagRequest, RagResponse
 from app.core.config import Settings, get_settings
 from app.retrieval.embeddings import EmbeddingError, EmbeddingProvider
 from app.retrieval.llm import LLMError, create_llm_client, resolve_llm_provider
-from app.services.rag import RagService
+from app.services.rag import RagCitedChunk as OutcomeCitedChunk
+from app.services.rag import RagContextChunk, RagService
 from app.services.semantic_search import SemanticSearchService
 from app.storage.database import get_database_session
+from app.storage.keyword_index import KeywordIndex
 from app.storage.vector_store import ChromaVectorStore, VectorStoreError
 
 router = APIRouter(prefix="/search")
+
+
+def _chunk_payload(
+    chunk: OutcomeCitedChunk | RagContextChunk,
+    *,
+    prompt_index: int | None = None,
+) -> RagCitedChunk:
+    return RagCitedChunk(
+        chunk_id=chunk.chunk_id,
+        document_id=chunk.document_id,
+        document_title=chunk.document_title,
+        page_start=chunk.page_start,
+        page_end=chunk.page_end,
+        text=chunk.text,
+        score=chunk.score,
+        retrieval_score=chunk.retrieval_score,
+        rerank_score=chunk.rerank_score,
+        dense_score=chunk.dense_score,
+        bm25_score=chunk.bm25_score,
+        fusion_score=chunk.fusion_score,
+        retrieval_sources=chunk.retrieval_sources,
+        prompt_index=prompt_index,
+    )
 
 
 def get_rag_service(
     session: Annotated[Session, Depends(get_database_session)],
     vector_store: Annotated[ChromaVectorStore, Depends(get_vector_store)],
     embeddings: Annotated[EmbeddingProvider, Depends(get_embedding_provider)],
+    keyword_index: Annotated[KeywordIndex, Depends(get_keyword_index)],
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> RagService:
     """Build a RAG service from request-scoped search and LLM clients."""
@@ -37,6 +67,11 @@ def get_rag_service(
         max_sentences_per_citation_group=(
             settings.rag_max_sentences_per_citation_group
         ),
+        keyword_index=keyword_index,
+        bm25_k1=settings.bm25_finetuned_k1,
+        bm25_b=settings.bm25_finetuned_b,
+        lexical_coverage_min=settings.rag_lexical_coverage_min,
+        lexical_idf_coverage_min=settings.rag_lexical_idf_coverage_min,
     )
 
 
@@ -80,20 +115,7 @@ def rag_search(
     return RagResponse(
         query=outcome.query,
         answer=outcome.answer,
-        cited_chunks=[
-            RagCitedChunk(
-                chunk_id=chunk.chunk_id,
-                document_id=chunk.document_id,
-                document_title=chunk.document_title,
-                page_start=chunk.page_start,
-                page_end=chunk.page_end,
-                text=chunk.text,
-                score=chunk.score,
-                retrieval_score=chunk.retrieval_score,
-                rerank_score=chunk.rerank_score,
-            )
-            for chunk in outcome.cited_chunks
-        ],
+        cited_chunks=[_chunk_payload(chunk) for chunk in outcome.cited_chunks],
         invalid_citations=list(outcome.invalid_citations),
         abstained=outcome.abstained,
         elapsed_ms=outcome.elapsed_ms,
@@ -102,18 +124,7 @@ def rag_search(
         citation_enforced=outcome.citation_enforced,
         abstention_reason=outcome.abstention_reason,
         context_chunks=[
-            RagCitedChunk(
-                chunk_id=chunk.chunk_id,
-                document_id=chunk.document_id,
-                document_title=chunk.document_title,
-                page_start=chunk.page_start,
-                page_end=chunk.page_end,
-                text=chunk.text,
-                score=chunk.score,
-                retrieval_score=chunk.retrieval_score,
-                rerank_score=chunk.rerank_score,
-                prompt_index=index,
-            )
+            _chunk_payload(chunk, prompt_index=index)
             for index, chunk in enumerate(outcome.context_chunks, start=1)
         ],
     )

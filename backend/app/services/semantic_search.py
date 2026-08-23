@@ -72,3 +72,37 @@ class SemanticSearchService:
                 )
             )
         return results
+
+    def records_for_ids(
+        self,
+        chunk_ids: list[str],
+    ) -> dict[str, SemanticSearchRecord]:
+        """Hydrate stored chunks without inventing a dense retrieval score."""
+
+        if not chunk_ids:
+            return {}
+
+        chunks = {
+            chunk.id: chunk
+            for chunk in self.session.scalars(
+                select(Chunk).where(Chunk.id.in_(chunk_ids))
+            )
+        }
+        records: dict[str, SemanticSearchRecord] = {}
+        for chunk_id in chunk_ids:
+            chunk = chunks.get(chunk_id)
+            if chunk is None:
+                continue
+            records[chunk_id] = SemanticSearchRecord(
+                chunk_id=chunk.id,
+                document_id=chunk.document_id,
+                document_title=chunk.document.title,
+                # Placeholder only; callers must not treat this as a dense hit.
+                score=0.0,
+                distance=1.0,
+                text=chunk.text,
+                page_start=chunk.page_start,
+                page_end=chunk.page_end,
+                section_title=chunk.section_title,
+            )
+        return records
