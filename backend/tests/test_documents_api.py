@@ -4,6 +4,7 @@ import math
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pymupdf
 import pytest
@@ -17,6 +18,12 @@ from app.main import create_app
 from app.models import Base, Chunk, Document
 from app.retrieval.embeddings import EmbeddingProvider
 from app.storage.database import create_database_engine, get_database_session
+from app.storage.keyword_index import KeywordIndexError
+from app.storage.vector_store import VectorStoreError
+
+if TYPE_CHECKING:
+    from app.processing.schemas import ExtractedDocument
+    from app.services.documents import DocumentService, DocumentServiceError
 
 
 @dataclass
@@ -263,13 +270,23 @@ def test_uploaded_document_is_searchable_and_removed_from_index(
 
 
 class _RecordingKeywordIndex:
-    def __init__(self, *, fail_upsert: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        fail_upsert: bool = False,
+        fail_delete: bool = False,
+        delete_error: type[Exception] = KeywordIndexError,
+    ) -> None:
         self.fail_upsert = fail_upsert
+        self.fail_delete = fail_delete
+        self.delete_error = delete_error
         self.delete_calls: list[str] = []
         self.upsert_calls: list[str] = []
 
     def delete_document(self, document_id: str) -> bool:
         self.delete_calls.append(document_id)
+        if self.fail_delete:
+            raise self.delete_error("keyword cleanup failed")
         return True
 
     def upsert_document(self, document_id: str, chunks) -> None:
@@ -280,20 +297,32 @@ class _RecordingKeywordIndex:
 
 
 class _RecordingVectorStore:
-    def __init__(self, *, fail_upsert: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        fail_upsert: bool = False,
+        fail_delete: bool = False,
+        upsert_error: type[Exception] = RuntimeError,
+    ) -> None:
         self.fail_upsert = fail_upsert
+        self.fail_delete = fail_delete
+        # Delete-path restore tests expect RuntimeError; the add path only
+        # catches VectorStoreError, so add-path tests override this.
+        self.upsert_error = upsert_error
         self.delete_calls: list[str] = []
         self.upsert_calls: list[str] = []
 
     def delete_document(self, document_id: str) -> bool:
         self.delete_calls.append(document_id)
+        if self.fail_delete:
+            raise VectorStoreError("vector cleanup failed")
         return True
 
     def upsert_document(self, document_id: str, chunks, embeddings) -> None:
         del embeddings
         self.upsert_calls.append(document_id)
         if self.fail_upsert:
-            raise RuntimeError("vector restore failed")
+            raise self.upsert_error("vector restore failed")
         list(chunks)
 
 
@@ -593,3 +622,237 @@ def test_pdf_without_extractable_text_is_rejected_and_leaves_no_file(
     assert response.status_code == 422
     assert "no extractable text" in response.json()["detail"]
     assert not list(document_api.settings.upload_dir.iterdir())
+
+
+# --- Failed-add cleanup isolation ---------------------------------------
+# The delete path already isolates each restoration step. The add path did
+# not: one raise from the vector cleanup skipped the keyword cleanup, leaving
+# postings for a document that never made it into SQLite, and replaced the
+# real add failure with the cleanup exception.
+
+
+@dataclass
+class _AddHarness:
+    service: "DocumentService"
+    session: Session
+    keyword_index: _RecordingKeywordIndex
+    vector_store: _RecordingVectorStore
+    document_id: str
+
+
+def _extracted(text: str) -> "ExtractedDocument":
+    """Build a minimal single-segment extraction for add-path tests."""
+
+    from app.processing.schemas import ExtractedDocument, ExtractedSegment
+
+    return ExtractedDocument(
+        title="Add Target",
+        source_format="pdf",
+        text=text,
+        segments=(ExtractedSegment(text=text, char_start=0, page_number=1),),
+    )
+
+
+def _add_harness(
+    tmp_path: Path,
+    *,
+    keyword_index: _RecordingKeywordIndex,
+    vector_store: _RecordingVectorStore,
+) -> _AddHarness:
+    from app.services.documents import DocumentService
+
+    database_path = tmp_path / "add.db"
+    engine = create_database_engine(f"sqlite:///{database_path.as_posix()}")
+    Base.metadata.create_all(engine)
+    session = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)()
+    settings = Settings(
+        data_dir=tmp_path,
+        upload_dir=tmp_path / "uploads",
+        index_dir=tmp_path / "indexes",
+        chroma_dir=tmp_path / "chroma",
+        database_dir=tmp_path / "database",
+        database_url=f"sqlite:///{database_path.as_posix()}",
+    )
+    settings.ensure_data_directories()
+    service = DocumentService(
+        session,
+        settings,
+        keyword_index,
+        vector_store,
+        DeterministicTestEmbedder(),
+    )
+    return _AddHarness(service, session, keyword_index, vector_store, "doc-add-1")
+
+
+def _run_failed_add(harness: _AddHarness) -> "DocumentServiceError":
+    """Drive _index_extracted to failure and return the raised error."""
+
+    from app.services.documents import DocumentServiceError
+
+    extracted = _extracted(
+        "Rollback isolation coverage for a failed document add."
+    )
+    with pytest.raises(DocumentServiceError) as raised:
+        harness.service._index_extracted(
+            extracted,
+            document_id=harness.document_id,
+            title="Add Target",
+            original_filename="add-target.pdf",
+            stored_filename="add-target.pdf",
+            source_type="upload",
+            source_url=None,
+            mime_type="application/pdf",
+            file_size_bytes=64,
+            sha256="a" * 64,
+        )
+    return raised.value
+
+
+def test_vector_cleanup_failure_still_attempts_keyword_cleanup(
+    tmp_path: Path,
+) -> None:
+    """The original desync: a raising vector cleanup skipped keyword cleanup."""
+
+    keyword_index = _RecordingKeywordIndex()
+    vector_store = _RecordingVectorStore(
+        fail_upsert=True, fail_delete=True, upsert_error=VectorStoreError
+    )
+    harness = _add_harness(
+        tmp_path, keyword_index=keyword_index, vector_store=vector_store
+    )
+
+    _run_failed_add(harness)
+
+    assert vector_store.delete_calls == [harness.document_id]
+    assert keyword_index.delete_calls == [harness.document_id]
+    harness.session.close()
+
+
+def test_database_rollback_failure_still_attempts_both_index_cleanups(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    keyword_index = _RecordingKeywordIndex()
+    vector_store = _RecordingVectorStore(
+        fail_upsert=True, upsert_error=VectorStoreError
+    )
+    harness = _add_harness(
+        tmp_path, keyword_index=keyword_index, vector_store=vector_store
+    )
+
+    from sqlalchemy.exc import SQLAlchemyError
+
+    def boom() -> None:
+        raise SQLAlchemyError("rollback failed")
+
+    monkeypatch.setattr(harness.session, "rollback", boom)
+
+    _run_failed_add(harness)
+
+    assert vector_store.delete_calls == [harness.document_id]
+    assert keyword_index.delete_calls == [harness.document_id]
+    harness.session.close()
+
+
+def test_every_cleanup_failure_is_attempted_and_logged_in_order(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    keyword_index = _RecordingKeywordIndex(fail_delete=True)
+    vector_store = _RecordingVectorStore(
+        fail_upsert=True, fail_delete=True, upsert_error=VectorStoreError
+    )
+    harness = _add_harness(
+        tmp_path, keyword_index=keyword_index, vector_store=vector_store
+    )
+
+    from sqlalchemy.exc import SQLAlchemyError
+
+    def boom() -> None:
+        raise SQLAlchemyError("rollback failed")
+
+    monkeypatch.setattr(harness.session, "rollback", boom)
+
+    with caplog.at_level("WARNING"):
+        _run_failed_add(harness)
+
+    assert vector_store.delete_calls == [harness.document_id]
+    assert keyword_index.delete_calls == [harness.document_id]
+    assert (
+        "database rollback, vector cleanup, keyword cleanup" in caplog.text
+    ), caplog.text
+    harness.session.close()
+
+
+def test_failed_add_preserves_the_original_cause(tmp_path: Path) -> None:
+    """A cleanup exception must not become the reported error."""
+
+    keyword_index = _RecordingKeywordIndex(fail_delete=True)
+    vector_store = _RecordingVectorStore(
+        fail_upsert=True, fail_delete=True, upsert_error=VectorStoreError
+    )
+    harness = _add_harness(
+        tmp_path, keyword_index=keyword_index, vector_store=vector_store
+    )
+
+    error = _run_failed_add(harness)
+
+    assert str(error) == "Could not store and index the uploaded document."
+    assert isinstance(error.__cause__, VectorStoreError)
+    assert "cleanup" not in str(error.__cause__)
+    harness.session.close()
+
+
+def test_successful_add_runs_no_cleanup(tmp_path: Path) -> None:
+    keyword_index = _RecordingKeywordIndex()
+    vector_store = _RecordingVectorStore()
+    harness = _add_harness(
+        tmp_path, keyword_index=keyword_index, vector_store=vector_store
+    )
+
+    document = harness.service._index_extracted(
+        _extracted("A document that indexes cleanly into both stores."),
+        document_id=harness.document_id,
+        title="Add Target",
+        original_filename="add-target.pdf",
+        stored_filename="add-target.pdf",
+        source_type="upload",
+        source_url=None,
+        mime_type="application/pdf",
+        file_size_bytes=64,
+        sha256="b" * 64,
+    )
+
+    assert document.keyword_indexed is True
+    assert document.vector_indexed is True
+    assert vector_store.delete_calls == []
+    assert keyword_index.delete_calls == []
+    harness.session.close()
+
+
+def test_bare_oserror_from_keyword_cleanup_is_contained(tmp_path: Path) -> None:
+    """KeywordIndex.delete_document can raise a bare OSError.
+
+    _persist_state creates the index directory outside its try block, so a
+    PermissionError is not wrapped in KeywordIndexError. If that escaped it
+    would replace the add failure, which is how a rejected upload previously
+    became a 500.
+    """
+
+    keyword_index = _RecordingKeywordIndex(
+        fail_delete=True, delete_error=PermissionError
+    )
+    vector_store = _RecordingVectorStore(
+        fail_upsert=True, upsert_error=VectorStoreError
+    )
+    harness = _add_harness(
+        tmp_path, keyword_index=keyword_index, vector_store=vector_store
+    )
+
+    error = _run_failed_add(harness)
+
+    assert keyword_index.delete_calls == [harness.document_id]
+    assert str(error) == "Could not store and index the uploaded document."
+    assert isinstance(error.__cause__, VectorStoreError)
+    harness.session.close()

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
@@ -24,6 +25,8 @@ from app.processing.extractors import extract_from_url
 from app.retrieval.embeddings import EmbeddingProvider
 from app.storage.keyword_index import KeywordIndex, KeywordIndexError
 from app.storage.vector_store import ChromaVectorStore, VectorChunk, VectorStoreError
+
+logger = logging.getLogger(__name__)
 
 _SUPPORTED_EXTENSIONS = {".pdf", ".docx"}
 _COPY_BUFFER_SIZE = 1024 * 1024
@@ -61,6 +64,17 @@ class DuplicateDocumentError(DocumentServiceError):
 
 class DocumentNotFoundError(DocumentServiceError):
     """Raised when a requested document ID does not exist."""
+
+
+def _log_incomplete_add_rollback(document_id: str, failures: list[str]) -> None:
+    """Surface failed cleanup steps without altering the reported error."""
+
+    if failures:
+        logger.warning(
+            "Add rollback incomplete for document %s: %s",
+            document_id,
+            ", ".join(failures),
+        )
 
 
 def _discard_partial_upload(path: Path) -> None:
@@ -276,11 +290,11 @@ class DocumentService:
             self.session.commit()
             return document
         except (DocumentServiceError, DocumentProcessingError):
-            self.session.rollback()
-            if vector_index_attempted:
-                self.vector_store.delete_document(document_id)
-            if keyword_index_written:
-                self.keyword_index.delete_document(document_id)
+            self._clean_up_failed_add(
+                document_id,
+                vector_index_attempted=vector_index_attempted,
+                keyword_index_written=keyword_index_written,
+            )
             raise
         except (
             OSError,
@@ -288,14 +302,61 @@ class DocumentService:
             KeywordIndexError,
             VectorStoreError,
         ) as error:
-            self.session.rollback()
-            if vector_index_attempted:
-                self.vector_store.delete_document(document_id)
-            if keyword_index_written:
-                self.keyword_index.delete_document(document_id)
+            self._clean_up_failed_add(
+                document_id,
+                vector_index_attempted=vector_index_attempted,
+                keyword_index_written=keyword_index_written,
+            )
             raise DocumentServiceError(
                 "Could not store and index the uploaded document."
             ) from error
+
+    def _clean_up_failed_add(
+        self,
+        document_id: str,
+        *,
+        vector_index_attempted: bool,
+        keyword_index_written: bool,
+    ) -> None:
+        """Undo a partial add, attempting every step independently.
+
+        Mirrors the delete path's isolation so one failing step cannot skip
+        the others: previously an exception from the vector cleanup left the
+        keyword postings behind, desynchronizing the two indexes for a
+        document that no longer exists in SQLite.
+
+        Unlike the delete path this never raises. It runs inside except
+        blocks that re-raise the real add failure, and that failure is what
+        the API reports; replacing it with a cleanup error would turn a clean
+        415/422 into an unhandled 500. Failures are logged, not swallowed.
+
+        Each step catches the errors its own API can raise. ChromaVectorStore
+        normalizes everything to VectorStoreError, but KeywordIndex.
+        delete_document does not: _persist_state creates the index directory
+        outside its try block, so a PermissionError surfaces as a bare
+        OSError. That is the same escape that already turned a rejected
+        upload into a 500, so OSError is caught here too.
+        """
+
+        failures: list[str] = []
+        try:
+            self.session.rollback()
+        except SQLAlchemyError:
+            failures.append("database rollback")
+
+        if vector_index_attempted:
+            try:
+                self.vector_store.delete_document(document_id)
+            except VectorStoreError:
+                failures.append("vector cleanup")
+
+        if keyword_index_written:
+            try:
+                self.keyword_index.delete_document(document_id)
+            except (KeywordIndexError, OSError):
+                failures.append("keyword cleanup")
+
+        _log_incomplete_add_rollback(document_id, failures)
 
     @staticmethod
     def _write_temporary_upload(
