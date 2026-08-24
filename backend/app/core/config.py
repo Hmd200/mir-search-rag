@@ -7,6 +7,25 @@ from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
+_ALLOWED_EMBEDDING_PROVIDERS = frozenset({"local", "gemini"})
+
+
+def resolve_embedding_provider(value: str) -> str:
+    """Accept only the configured local and Gemini embedding backends."""
+
+    provider = value.strip().lower()
+    if provider not in _ALLOWED_EMBEDDING_PROVIDERS:
+        raise ValueError("Unsupported embedding provider. Use 'local' or 'gemini'.")
+    return provider
+
+
+def gemini_vector_collection_name(model: str, dimensions: int) -> str:
+    """Derive a MiniLM-incompatible Chroma collection for Gemini vectors."""
+
+    slug = model.strip().lower().removeprefix("models/")
+    slug = slug.removeprefix("gemini-embedding-") or "default"
+    slug = slug.replace("-", "_")
+    return f"mir_chunks_gemini_{slug}_{dimensions}"
 
 
 class Settings(BaseSettings):
@@ -44,6 +63,7 @@ class Settings(BaseSettings):
     )
     database_echo: bool = False
 
+    embedding_provider: str = "local"
     embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2"
     embedding_device: str = "cpu"
     embedding_batch_size: int = 32
@@ -54,6 +74,9 @@ class Settings(BaseSettings):
     gemini_api_key: str = ""
     gemini_model: str = "gemini-2.5-flash"
     gemini_api_base: str = "https://generativelanguage.googleapis.com/v1beta"
+    gemini_embedding_model: str = "gemini-embedding-001"
+    gemini_embedding_dimensions: int = Field(default=768, ge=1, le=3072)
+    gemini_embedding_timeout_seconds: float = Field(default=30.0, gt=0.0)
 
     prf_feedback_docs: int = 5
     prf_max_expansion_terms: int = 10
@@ -71,6 +94,21 @@ class Settings(BaseSettings):
     max_upload_size_mb: int = 25
     chunk_size: int = 500
     chunk_overlap: int = 75
+
+    def resolved_embedding_provider(self) -> str:
+        """Return the normalized embedding provider or raise if unknown."""
+
+        return resolve_embedding_provider(self.embedding_provider)
+
+    def active_vector_collection_name(self) -> str:
+        """Return the Chroma collection that matches the active embedder."""
+
+        if self.resolved_embedding_provider() == "gemini":
+            return gemini_vector_collection_name(
+                self.gemini_embedding_model,
+                self.gemini_embedding_dimensions,
+            )
+        return self.vector_collection_name
 
     def ensure_data_directories(self) -> None:
         """Create local runtime directories when the API starts."""

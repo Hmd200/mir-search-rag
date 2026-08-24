@@ -186,6 +186,61 @@ class ChromaVectorStore:
         except Exception as error:
             raise VectorStoreError("Could not run semantic search.") from error
 
+    def listed_chunk_ids(self) -> list[str]:
+        """Return every stored chunk ID in the active collection."""
+
+        try:
+            with self._lock:
+                result = self._collection.get(include=[])
+            return list(result.get("ids") or [])
+        except Exception as error:
+            raise VectorStoreError("Could not list Chroma chunk IDs.") from error
+
+    def get_metadatas(
+        self,
+        chunk_ids: list[str],
+    ) -> dict[str, dict[str, str | int | float | bool]]:
+        """Return stored citation metadata for the requested chunk IDs."""
+
+        if not chunk_ids:
+            return {}
+        try:
+            with self._lock:
+                result = self._collection.get(
+                    ids=chunk_ids,
+                    include=["metadatas"],
+                )
+            ids = result.get("ids") or []
+            metadatas = result.get("metadatas") or []
+            mapping: dict[str, dict[str, str | int | float | bool]] = {}
+            for chunk_id, metadata in zip(ids, metadatas, strict=True):
+                cleaned: dict[str, str | int | float | bool] = {}
+                if metadata is not None:
+                    for key, value in metadata.items():
+                        if isinstance(value, (str, int, float, bool)):
+                            cleaned[str(key)] = value
+                mapping[str(chunk_id)] = cleaned
+            return mapping
+        except VectorStoreError:
+            raise
+        except Exception as error:
+            raise VectorStoreError("Could not read Chroma metadata.") from error
+
+    def reset_collection(self) -> None:
+        """Delete and recreate this collection only; other collections stay."""
+
+        try:
+            with self._lock:
+                self._client.delete_collection(self.collection_name)
+                self._collection = self._client.get_or_create_collection(
+                    name=self.collection_name,
+                    metadata={"hnsw:space": "cosine"},
+                )
+        except Exception as error:
+            raise VectorStoreError(
+                "Could not reset the Chroma collection."
+            ) from error
+
     def stats(self) -> VectorStoreStats:
         """Return the current number of embedded chunks."""
 

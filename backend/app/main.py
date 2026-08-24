@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.router import api_router
 from app.core.config import get_settings
+from app.retrieval.embeddings import embedding_provider_from_settings
 from app.storage.database import close_database, init_database
 
 
@@ -16,6 +17,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Prepare local storage before accepting requests."""
 
     app.state.settings.ensure_data_directories()
+    embedding_provider_from_settings(app.state.settings)
     init_database()
     try:
         yield

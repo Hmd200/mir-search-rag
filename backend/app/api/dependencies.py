@@ -7,7 +7,7 @@ from fastapi import Depends
 from app.core.config import Settings, get_settings
 from app.retrieval.embeddings import (
     EmbeddingProvider,
-    open_embedding_provider,
+    embedding_provider_from_settings,
 )
 from app.storage.keyword_index import KeywordIndex, open_keyword_index
 from app.storage.vector_store import (
@@ -28,14 +28,9 @@ def get_keyword_index(
 def get_embedding_provider(
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> EmbeddingProvider:
-    """Return the configured lazy local sentence-transformer."""
+    """Return the configured local or Gemini embedding provider."""
 
-    return open_embedding_provider(
-        settings.embedding_model,
-        str(settings.model_dir.resolve()),
-        settings.embedding_device,
-        settings.embedding_batch_size,
-    )
+    return embedding_provider_from_settings(settings)
 
 
 def get_vector_store(
@@ -45,5 +40,5 @@ def get_vector_store(
 
     return open_vector_store(
         str(settings.chroma_dir.resolve()),
-        settings.vector_collection_name,
+        settings.active_vector_collection_name(),
     )

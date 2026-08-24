@@ -13,9 +13,9 @@ A full-stack search engine that keeps a **hand-built inverted index** and a **Ch
 | Surface | What you get |
 |---|---|
 | **Admin** (`/admin`) | Upload PDF/DOCX, scrape a public URL, list the corpus, delete (both indexes cleaned together) |
-| **Search** (`/`) | TF-IDF, BM25 (default / tunable / finetuned), Semantic, or RAG, with PRF, query rewrite, and rerank as toggles |
+| **Search** (`/`) | TF-IDF, BM25 (Default / Tunable / Calibrated), Semantic, or RAG, with PRF, query rewrite, and rerank as toggles |
 
-Lexical scoring is implemented from scratch (postings, TF-IDF cosine, Okapi BM25, champion lists, Rocchio PRF). Semantic search and RAG use `sentence-transformers/all-MiniLM-L6-v2` locally. Generation defaults to **Ollama** (`qwen3:8b`); **Gemini** is an optional RAG toggle when `MIR_GEMINI_API_KEY` is set.
+Lexical scoring is implemented from scratch (postings, TF-IDF cosine, Okapi BM25, champion lists, Rocchio PRF). Semantic search and RAG default to local `sentence-transformers/all-MiniLM-L6-v2` embeddings; **Gemini** embeddings (`gemini-embedding-001` through AvalAI) are optional via `MIR_EMBEDDING_PROVIDER=gemini` and use a separate Chroma collection. Generation defaults to **Ollama** (`qwen3:8b`); **Gemini** is an optional RAG toggle when `MIR_GEMINI_API_KEY` is set.
 
 ---
 
@@ -27,7 +27,7 @@ flowchart TD
   parse["Parse and extract text"]
   chunk["Overlapping word chunks<br/>500 words, 75 overlap"]
   lex["Custom inverted index<br/>stemmed postings, TF-IDF, BM25"]
-  vec["ChromaDB cosine index<br/>all-MiniLM-L6-v2"]
+  vec["ChromaDB cosine index<br/>active embedder"]
   ui["Search UI"]
   vsm["TF-IDF + optional PRF"]
   bm25["BM25"]
@@ -45,7 +45,7 @@ flowchart TD
   rag --> lex
 ```
 
-**Indexing.** An admin upload (PDF/DOCX) or public URL is parsed to text, split into overlapping word chunks (500 words, 75-word overlap), then written to both stores: a custom inverted index (tokenized, stop-word filtered, Porter-stemmed postings with term frequencies) and Chroma (dense vectors from `all-MiniLM-L6-v2`, plus chunk text and metadata). Add and delete go through one path. If the vector write fails after the keyword write (or the reverse on delete), the other index is rolled back so the two stores stay aligned.
+**Indexing.** An admin upload (PDF/DOCX) or public URL is parsed to text, split into overlapping word chunks (500 words, 75-word overlap), then written to both stores: a custom inverted index (tokenized, stop-word filtered, Porter-stemmed postings with term frequencies) and Chroma (dense vectors from the active embedding provider, plus chunk text and metadata). Local MiniLM and Gemini vectors use **separate** Chroma collections and must not be mixed. Add and delete go through one path. If the vector write fails after the keyword write (or the reverse on delete), the other index is rolled back so the two stores stay aligned.
 
 **Querying.** TF-IDF (optional Rocchio PRF) and BM25 score the inverted index. Semantic search embeds the query with the same encoder and retrieves nearest chunks from Chroma. RAG optionally rewrites the query for the **dense** arm only, then always fuses dense top-20 with BM25 top-20 (finetuned `k1`/`b`, original user wording) by unweighted RRF (`k=60`). Optional cross-encoder rerank, generation, and grounding stay on the original question. Each accepted citation group of at most two factual sentences must end with an in-range citation (a citation covers preceding sentences only); verifier failure causes safe abstention. Grounding verification adds one LLM call to successful RAG generation and is best-effort—not a formal entailment guarantee, and it does not make hallucinations impossible.
 
@@ -66,9 +66,9 @@ flowchart TD
 | Method | Scoring | Notes |
 |---|---|---|
 | **TF-IDF (VSM)** | Cosine over `(1 + log tf) × idf` on **both** query and document (SMART `ltc.ltc`) | Default search uses **champion lists** (top-50 postings per term by TF), then full postings if there are too few candidates. **Rocchio PRF** (`α=1`, `β=0.75`) is a UI toggle; expansion terms are shown as chips. |
-| **BM25** | Okapi BM25, Lucene IDF `ln(1 + (N−df+0.5)/(df+0.5))` | Three modes: **default** always uses `k1=1.5`, `b=0.75`; **tunable** uses request `k1`/`b`; **finetuned** uses `MIR_BM25_FINETUNED_K1` / `MIR_BM25_FINETUNED_B` (also `1.5` / `0.75` after an in-sample sweep that tied). The UI always sends the selected mode. The response reports the mode and the effective `k1`/`b`. |
-| **Semantic** | Cosine nearest neighbors in Chroma | Same encoder for documents and queries. |
-| **RAG** | Optional rewrite → **hybrid retrieve** (dense top-20 + BM25 top-20, unweighted RRF `k=60`) → optional rerank → generate → same-model grounding verify | Dense rewrite is optional; BM25 and the lexical gate always use the original question. Prompt requires `[1]…[N]` citations. Fabricated markers are stripped. A successful cited draft is rewritten once against the retrieved context; each accepted group of at most two factual sentences must end with an in-range citation (configurable via `MIR_RAG_MAX_SENTENCES_PER_CITATION_GROUP`). The relevance gate admits a chunk if dense cosine ≥ `MIR_RAG_MIN_RETRIEVAL_SCORE` **or** BM25-backed lexical coverage/IDF-coverage (`MIR_RAG_LEXICAL_COVERAGE_MIN` / `MIR_RAG_LEXICAL_IDF_COVERAGE_MIN`) **or** the existing all-terms-present bypass. Verifier failure (or empty/`INSUFFICIENT_EVIDENCE` output) abstains. Model may also abstain with `INSUFFICIENT_EVIDENCE` earlier. Grounding verification adds one LLM call to successful generation and is best-effort, not a formal entailment check. |
+| **BM25** | Okapi BM25, Lucene IDF `ln(1 + (N−df+0.5)/(df+0.5))` | Three modes: **Default** always uses `k1=1.5`, `b=0.75`; **Tunable** uses request `k1`/`b`; **Calibrated** uses `MIR_BM25_FINETUNED_K1` / `MIR_BM25_FINETUNED_B` (also `1.5` / `0.75` after an in-sample sweep that tied). The UI labels these Default / Tunable / **Calibrated**; the API value for Calibrated is still `bm25_mode=finetuned`, and the env vars keep the `FINETUNED` names. The UI always sends the selected mode. The response reports the mode and the effective `k1`/`b`. |
+| **Semantic** | Cosine nearest neighbors in Chroma | Same **active** encoder for documents and queries. Local MiniLM and Gemini indexes are separate collections. |
+| **RAG** | Optional rewrite → **hybrid retrieve** (dense top-20 + BM25 top-20, unweighted RRF `k=60`) → optional rerank → generate → same-model grounding verify | Dense rewrite is optional; BM25 and the lexical gate always use the original question. Prompt requires `[1]…[N]` citations and asks for `[1][2]`, not `[1, 2]`. Terminal comma groups (`[1, 2]`, `[1,2,3]`) are normalized to `[1][2]` before validation, so the conventional comma form is accepted from any model without loosening the citation rules; malformed lists (`[1,]`, `[,2]`, `[1,,2]`) are left unparsed and fail. Fabricated markers are stripped. A successful cited draft is rewritten once against the retrieved context; each accepted group of at most two factual sentences must end with an in-range citation (configurable via `MIR_RAG_MAX_SENTENCES_PER_CITATION_GROUP`). The relevance gate admits a chunk if dense cosine ≥ `MIR_RAG_MIN_RETRIEVAL_SCORE` **or** BM25-backed lexical coverage/IDF-coverage (`MIR_RAG_LEXICAL_COVERAGE_MIN` / `MIR_RAG_LEXICAL_IDF_COVERAGE_MIN`) **or** the existing all-terms-present bypass. Verifier failure (or empty/`INSUFFICIENT_EVIDENCE` output) abstains. Model may also abstain with `INSUFFICIENT_EVIDENCE` earlier. Grounding verification adds one LLM call to successful generation and is best-effort, not a formal entailment check. |
 
 Lexical preprocessing: Unicode tokenization, stop-word removal, **Porter stemming**. Ranking is **per chunk**; the UI shows document title, score, and a snippet (with page range when known).
 
@@ -197,17 +197,53 @@ ollama list
 
 **Gemini (optional API key)**
 
-1. Create a key in [Google AI Studio](https://aistudio.google.com/apikey).
-2. Copy `.env.example` to `.env` at the repository root and set:
+Works with a standard Google AI Studio key, or with a proxy such as **AvalAI** (what this course provides).
 
-```bash
+1. Copy `.env.example` to `.env` at the repository root (never commit `.env`).
+2. Set your key, and the base URL only if you use a proxy:
+
+```env
 MIR_GEMINI_API_KEY=your_key_here
+MIR_GEMINI_MODEL=gemini-2.5-flash
+# Default is Google's endpoint; override only for a proxy:
+# MIR_GEMINI_API_BASE=https://api.avalai.ir/v1beta
 ```
 
-3. Restart the API. In the Search UI, select RAG → **Gemini (API)**.
-4. Optional: `MIR_GEMINI_MODEL` (default `gemini-2.5-flash`).
+3. Restart the API (settings are cached at startup). In the Search UI, select RAG → **Gemini (API)**.
 
-Do not commit `.env`. Embedding and reranker weights (`sentence-transformers/all-MiniLM-L6-v2`, `cross-encoder/ms-marco-MiniLM-L-6-v2`) download from Hugging Face on first API start. Those models are public; no Hugging Face token is required.
+Google AI Studio keys work with the default base (`https://generativelanguage.googleapis.com/v1beta`). For **AvalAI**, use `https://api.avalai.ir/v1beta` — its **native Gemini** interface. Do **not** use `https://api.avalai.ir/v1`, which is AvalAI's OpenAI-compatible surface; this client posts to `{base}/models/{model}:generateContent` with an `x-goog-api-key` header and will not work against it.
+
+**Gemini embeddings (optional and experimental — not the submitted configuration)**
+
+The submitted and demonstrated configuration is **local MiniLM embeddings** (`MIR_EMBEDDING_PROVIDER=local`) with Chroma collection `mir_chunks`. Gemini embeddings are an **optional experimental provider**, not a recommended default and **not shown to improve retrieval** on this corpus:
+
+- On the 3-document corpus, Gemini cosine scores for relevant and irrelevant chunks **overlap badly** — the score distribution is compressed and high across the board (top-1 ≈ `0.70` on a query whose MiniLM top-1 is ≈ `0.28`). Relevance is not separable by an absolute threshold in the way MiniLM's is.
+- `MIR_RAG_MIN_RETRIEVAL_SCORE` (`0.30`) is a **dense-cosine floor calibrated against MiniLM**. It is meaningless against Gemini's compressed distribution and was never recalibrated for it. Running RAG on Gemini embeddings therefore applies a threshold that does not correspond to the score scale in use.
+- Document embedding is **serial: one HTTP request per chunk**, with no batching and no retry on `429`/`5xx`. Uploads are correspondingly slower and more fragile than local MiniLM, and add a network dependency to indexing.
+
+It is committed as a working, tested integration, not as an accuracy claim. To enable it:
+
+```env
+MIR_EMBEDDING_PROVIDER=gemini
+MIR_GEMINI_EMBEDDING_MODEL=gemini-embedding-001
+MIR_GEMINI_EMBEDDING_DIMENSIONS=768
+# Reuses MIR_GEMINI_API_KEY and MIR_GEMINI_API_BASE=https://api.avalai.ir/v1beta
+```
+
+Document chunks are requested with task type `RETRIEVAL_DOCUMENT`, queries with `RETRIEVAL_QUERY`, 768 dimensions, then L2-normalized. Gemini vectors are stored in a separate Chroma collection (`mir_chunks_gemini_001_768`); the existing MiniLM collection is left untouched. There is no silent fallback to MiniLM.
+
+After switching providers, re-embed stored SQLite chunks (does not reparse files or rewrite BM25):
+
+```bash
+cd backend
+python -m app.reindex_vectors
+# only if the target Gemini collection is already nonempty:
+python -m app.reindex_vectors --overwrite
+```
+
+The command prints counts only, and refuses to overwrite a nonempty target collection unless `--overwrite` is set. It only ever touches the **active** collection — the one selected by `MIR_EMBEDDING_PROVIDER`. Note that `--overwrite` therefore *does* delete and rebuild the MiniLM collection if you run it while `MIR_EMBEDDING_PROVIDER=local`; it is safe only in the sense that it never touches a collection other than the active one.
+
+Do not commit `.env`. Local embedding and reranker weights (`sentence-transformers/all-MiniLM-L6-v2`, `cross-encoder/ms-marco-MiniLM-L-6-v2`) download from Hugging Face on first API start when `MIR_EMBEDDING_PROVIDER=local`. Those models are public; no Hugging Face token is required. Gemini embeddings use AvalAI over HTTP and do not download MiniLM.
 
 ### Configuration (`MIR_` prefix)
 
@@ -216,12 +252,18 @@ All optional. `.env` is loaded from the **repository root**.
 | Variable | Default | Purpose |
 |---|---|---|
 | `MIR_CORS_ORIGINS` | localhost / 127.0.0.1 ports 5173 and 4173 | Frontend origins |
-| `MIR_EMBEDDING_MODEL` | `sentence-transformers/all-MiniLM-L6-v2` | Document and query embeddings |
+| `MIR_EMBEDDING_PROVIDER` | `local` | Embedding backend: `local` (MiniLM) or `gemini` (AvalAI native `embedContent`). No silent fallback. |
+| `MIR_EMBEDDING_MODEL` | `sentence-transformers/all-MiniLM-L6-v2` | Local document and query embeddings when provider is `local` |
 | `MIR_EMBEDDING_DEVICE` | `cpu` | `cpu` or `cuda` |
+| `MIR_VECTOR_COLLECTION_NAME` | `mir_chunks` | Chroma collection for the local MiniLM index |
+| `MIR_GEMINI_EMBEDDING_MODEL` | `gemini-embedding-001` | Gemini embedding model id (AvalAI native) |
+| `MIR_GEMINI_EMBEDDING_DIMENSIONS` | `768` | Requested output dimensionality; vectors are L2-normalized |
+| `MIR_GEMINI_EMBEDDING_TIMEOUT_SECONDS` | `30` | Timeout for one Gemini embedding HTTP call |
 | `MIR_OLLAMA_BASE_URL` | `http://127.0.0.1:11434` | Ollama server |
 | `MIR_OLLAMA_MODEL` | `qwen3:8b` | RAG generation model (Ollama) |
 | `MIR_LLM_PROVIDER` | `ollama` | Default generator if the UI omits a choice |
-| `MIR_GEMINI_API_KEY` | empty | Required only for the Gemini RAG option |
+| `MIR_GEMINI_API_KEY` | empty | Required for Gemini RAG generation and for `MIR_EMBEDDING_PROVIDER=gemini` |
+| `MIR_GEMINI_API_BASE` | `https://generativelanguage.googleapis.com/v1beta` | Gemini `generateContent` base. Override for a proxy, e.g. AvalAI's native endpoint `https://api.avalai.ir/v1beta` (not `/v1`, which is OpenAI-compatible). |
 | `MIR_GEMINI_MODEL` | `gemini-2.5-flash` | Gemini model id |
 | `MIR_MAX_UPLOAD_SIZE_MB` | `25` | Upload cap |
 | `MIR_CHUNK_SIZE` | `500` | Words per chunk |
@@ -301,7 +343,9 @@ That is the scale at which PRF and semantic search are visible here. A larger, m
 
 - **Index maintenance is not incremental.** Each add/delete recomputes cosine norms and champion lists for the whole inverted index. Fine for a course-sized corpus.
 - **Older uploads** indexed before page-spanning chunks keep the old one-page-per-chunk split until re-uploaded.
-- **LLM:** Ollama is default; Gemini needs `MIR_GEMINI_API_KEY`. Retrieval is unchanged.
+- **LLM:** Ollama is default; Gemini generation needs `MIR_GEMINI_API_KEY`. Gemini embeddings are a separate switch (`MIR_EMBEDDING_PROVIDER`) and a separate Chroma collection; they are not a claim of better retrieval than MiniLM.
+- **Gemini embeddings are experimental and uncalibrated.** Their cosine scores for relevant and irrelevant chunks overlap badly on this corpus, and `MIR_RAG_MIN_RETRIEVAL_SCORE` (`0.30`) is a MiniLM-calibrated floor that does not transfer to their compressed score scale. Document embedding is serial (one HTTP request per chunk, no batching, no `429`/`5xx` retry). The submitted configuration uses local MiniLM; see section 5.
+- **RAG generation is non-deterministic.** Repeated identical RAG requests do not always produce the same outcome, since generation is sampled. Abstention is the safe outcome, not a crash. After the comma-citation fix (section 3), both providers answered the two tested BM25 parameter questions 4/4; Gemini correctly abstained on the tested Mars and CNN negatives, and Ollama on the tested Mars negative. Before that fix Gemini frequently abstained on answerable questions because it writes `[1, 2]`. These are small live samples on a 3-document corpus, not a benchmark. Long natural-language questions can still fail the retrieval gate with `low_relevance` on this 3-document corpus, and a model that replies with a markdown bullet list is rejected by the plain-prose rule and retried.
 - **RAG grounding:** Successful answers go through a same-model grounding rewrite; each accepted citation group of at most two factual sentences must end with an in-range citation, and verifier failure abstains. Same-model verification is best-effort and is not a formal entailment guarantee—hallucinations remain possible. Grounding verification adds one LLM call to successful RAG generation.
 - **RAG answer-relevance.** Grounding checks claim support, not whether the answer addresses the asked property. A supported but off-target answer (for example a related count instead of the specific one requested) can still be returned. A single-call structured verdict was attempted and did not close this gap without adding a second LLM call.
 - **RAG lexical false positives.** Hybrid retrieval admits some dense-weak, BM25-strong questions that have no answer in the corpus. Safe downstream abstention (`model_abstained`, `citation_failure`, or `grounding_failure`) is acceptable; an unsupported answer is not. Calibration of the coverage / IDF-coverage floors was on a small corpus, so phrasing changes can straddle the gate.

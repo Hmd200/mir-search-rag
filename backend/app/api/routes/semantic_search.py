@@ -28,7 +28,7 @@ def semantic_search(
     embeddings: Annotated[EmbeddingProvider, Depends(get_embedding_provider)],
     top_k: Annotated[int, Query(ge=1, le=50)] = 10,
 ) -> SemanticSearchResponse:
-    """Search Chroma's HNSW index using local sentence embeddings."""
+    """Search Chroma's HNSW index using the active embedding provider."""
 
     started = perf_counter()
     try:
