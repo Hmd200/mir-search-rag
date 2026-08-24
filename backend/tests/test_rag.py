@@ -1,5 +1,6 @@
 """Tests for grounded RAG generation with a mocked LLM client."""
 
+import re
 from inspect import signature
 
 from fastapi import FastAPI
@@ -17,6 +18,7 @@ from app.services.rag import (
     _RETRY_PROMPT,
     _SYSTEM_PROMPT,
     RagService,
+    expand_comma_citation_groups,
     normalize_cited_prose,
     validate_citations,
     validate_sentence_citation_coverage,
@@ -1547,3 +1549,199 @@ def test_prompt_context_strips_embedded_wiki_citation_markers() -> None:
     assert outcome.abstained is False
     assert outcome.answer == "BM25F extends BM25 [1]."
     assert [chunk.chunk_id for chunk in outcome.cited_chunks] == ["chunk-1"]
+
+
+# --- Comma citation groups: [1, 2] is a conventional synonym for [1][2]. ---
+# Models legitimately emit the comma form; every citation regex here matches
+# [n] tokens only, so without normalization a correct cited answer is
+# discarded. Expansion must not loosen any downstream citation rule.
+
+
+@pytest.mark.parametrize(
+    ("answer", "expected_numbers"),
+    [
+        ("Claim [1, 2].", [1, 2]),
+        ("Claim [1,2].", [1, 2]),
+        ("Claim [1, 2, 3].", [1, 2, 3]),
+        ("Claim [1 ,  2].", [1, 2]),
+        ("Claim [1] [2].", [1, 2]),
+        ("Claim [1][2].", [1, 2]),
+        ("Claim.[1, 2]", [1, 2]),
+    ],
+)
+def test_comma_citation_group_passes_and_cites_every_source(
+    answer: str,
+    expected_numbers: list[int],
+) -> None:
+    chunk_count = 3
+    cleaned, invalid = validate_citations(answer, chunk_count)
+
+    assert invalid == ()
+    assert validate_sentence_citation_coverage(
+        normalize_cited_prose(cleaned), chunk_count
+    )
+    assert [
+        int(number) for number in re.findall(r"\[(\d+)]", cleaned)
+    ] == expected_numbers
+
+
+@pytest.mark.parametrize(
+    "answer",
+    ["Claim [1,].", "Claim [,2].", "Claim [1,,2].", "Claim [1, ].", "Claim [1, 0]."],
+)
+def test_malformed_comma_citation_is_not_expanded_and_fails(answer: str) -> None:
+    """Malformed lists must stay unparsed, not be repaired into valid markers."""
+
+    assert expand_comma_citation_groups(answer) == answer
+    cleaned, _ = validate_citations(answer, 3)
+    assert not validate_sentence_citation_coverage(
+        normalize_cited_prose(cleaned), 3
+    )
+
+
+def test_out_of_range_item_inside_comma_group_is_reported_invalid() -> None:
+    cleaned, invalid = validate_citations("Claim [1, 9].", 4)
+
+    assert invalid == ("[9]",)
+    assert "[9]" not in cleaned
+    assert "[1]" in cleaned
+
+
+def test_comma_group_does_not_rescue_an_uncited_following_sentence() -> None:
+    """Citation direction is preserved: a group may not cover what follows."""
+
+    cleaned, _ = validate_citations("Claim [1, 2]. Uncited.", 3)
+
+    assert not validate_sentence_citation_coverage(
+        normalize_cited_prose(cleaned), 3
+    )
+
+
+def test_comma_group_alone_is_still_a_citation_only_failure() -> None:
+    cleaned, _ = validate_citations("[1, 2].", 3)
+
+    assert not validate_sentence_citation_coverage(
+        normalize_cited_prose(cleaned), 3
+    )
+
+
+def test_comma_group_beyond_sentence_maximum_is_still_rejected() -> None:
+    answer = "One. Two. Three [1, 2]."
+    cleaned, _ = validate_citations(answer, 3)
+
+    assert not validate_sentence_citation_coverage(
+        normalize_cited_prose(cleaned), 3, max_sentences_per_group=2
+    )
+
+
+def test_mid_sentence_comma_citation_stays_invalid() -> None:
+    answer = "Claim [1, 2] continues without a terminal citation."
+    cleaned, _ = validate_citations(answer, 3)
+
+    assert not validate_sentence_citation_coverage(
+        normalize_cited_prose(cleaned), 3
+    )
+
+
+def test_bracketed_prose_is_not_treated_as_a_citation_group() -> None:
+    """Non-terminal bracketed lists are prose and must survive untouched."""
+
+    answer = "The array [1, 2] was sorted before indexing [1]."
+
+    assert expand_comma_citation_groups(answer) == answer
+
+
+def test_grounding_output_with_comma_citations_cites_both_sources() -> None:
+    """End-to-end: the verifier's [1, 2] must yield two cited chunks."""
+
+    records = [_record(index) for index in range(1, 3)]
+    llm = FakeLLM(
+        "",
+        answers=[
+            "BM25 normalizes document length [1].",
+            "BM25 normalizes document length. It saturates term frequency [1, 2].",
+        ],
+    )
+    service = RagService(FakeSearch(records), llm)
+
+    outcome = service.generate("What does BM25 do?", top_k=2)
+
+    assert outcome.abstained is False
+    assert outcome.abstention_reason is None
+    assert [chunk.chunk_id for chunk in outcome.cited_chunks] == [
+        "chunk-1",
+        "chunk-2",
+    ]
+
+
+def test_repeated_source_in_comma_group_is_deduplicated() -> None:
+    records = [_record(index) for index in range(1, 3)]
+    llm = FakeLLM(
+        "",
+        answers=[
+            "BM25 normalizes document length [1].",
+            "BM25 normalizes document length [1, 1].",
+        ],
+    )
+    service = RagService(FakeSearch(records), llm)
+
+    outcome = service.generate("What does BM25 do?", top_k=2)
+
+    assert outcome.abstained is False
+    assert [chunk.chunk_id for chunk in outcome.cited_chunks] == ["chunk-1"]
+
+
+def test_every_prompt_forbids_the_comma_citation_form() -> None:
+    rule = "Use [1][2] for multiple sources, not [1, 2]."
+
+    for prompt in (_SYSTEM_PROMPT, _RETRY_PROMPT, _GROUNDING_SYSTEM_PROMPT):
+        assert rule in prompt
+
+
+def test_wrapped_bracketed_prose_is_not_expanded_across_a_line_break() -> None:
+    """A visual line wrap is not a citation boundary.
+
+    Treating every newline as terminal expanded prose that merely happened to
+    wrap, which rewrote the text and invented a citation for chunk 2.
+    """
+
+    answer = "The array [1, 2]\nwas sorted before indexing [1]."
+
+    assert expand_comma_citation_groups(answer) == answer
+
+    cleaned, invalid = validate_citations(answer, 3)
+    assert invalid == ()
+    assert "[1, 2]" in cleaned
+    assert validate_sentence_citation_coverage(normalize_cited_prose(cleaned), 3)
+
+
+def test_comma_group_at_end_of_a_wrapped_paragraph_is_expanded() -> None:
+    """The block does end here, so this one is a real terminal citation."""
+
+    answer = "BM25 normalizes document length\nand saturates term frequency [1, 2]."
+    cleaned, _ = validate_citations(answer, 3)
+
+    assert "[1][2]" in cleaned
+    assert validate_sentence_citation_coverage(normalize_cited_prose(cleaned), 3)
+
+
+def test_comma_group_before_a_blank_line_is_expanded() -> None:
+    """A blank line closes the block, so the marker is block-terminal."""
+
+    answer = "First paragraph [1, 2]\n\nSecond paragraph [1]."
+
+    assert "[1][2]" in expand_comma_citation_groups(answer)
+
+
+def test_comma_group_before_a_bullet_marker_is_expanded() -> None:
+    """Each bullet starts its own block, closing the preceding one."""
+
+    answer = "- first item [1, 2]\n- second item [1]."
+
+    assert "[1][2]" in expand_comma_citation_groups(answer)
+
+
+def test_wrapped_prose_before_a_bullet_is_not_expanded() -> None:
+    answer = "The array [1, 2]\nwas sorted\n- a bullet item [1]."
+
+    assert expand_comma_citation_groups(answer) == answer

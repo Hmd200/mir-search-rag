@@ -68,6 +68,94 @@ _SPLIT_AFTER_CITED_SENTENCE = re.compile(
     r")"
     r"(?=\s+(?!\[\d+])\S)"
 )
+# One citation token: [1] or a well-formed comma list such as [1, 2].
+# Items must be positive integers, so [1,], [,2] and [1,,2] never match and
+# are therefore never expanded (they stay unparseable and fail validation).
+_CITATION_TOKEN_SOURCE = r"\[[ \t]*[1-9][0-9]*(?:[ \t]*,[ \t]*[1-9][0-9]*)*[ \t]*\]"
+_CITATION_RUN = re.compile(
+    rf"{_CITATION_TOKEN_SOURCE}(?:[ \t]*{_CITATION_TOKEN_SOURCE})*"
+)
+_COMMA_CITATION_TOKEN = re.compile(
+    r"\[[ \t]*(?P<items>[1-9][0-9]*(?:[ \t]*,[ \t]*[1-9][0-9]*)+)[ \t]*\]"
+)
+_TERMINAL_PUNCTUATION = (".", "?", "!")
+
+
+def _is_block_start(line: str) -> bool:
+    """True when this line closes any open block, per _iter_citation_blocks."""
+
+    stripped = line.strip()
+    return not stripped or _BULLET_PREFIX.fullmatch(stripped) is not None
+
+
+def expand_comma_citation_groups(answer: str) -> str:
+    """Rewrite terminal [1, 2] citation markers as the canonical [1][2].
+
+    Models legitimately read "one or more bracket markers" as permitting a
+    comma list, but every citation regex here matches [n] tokens only, so the
+    comma form parses as prose and the answer is discarded. Normalizing it up
+    front accepts the alternate syntax without loosening any downstream rule:
+    range checks, group direction and the sentence maximum all still run on
+    the expanded markers.
+
+    Only runs in a sentence-terminal citation position are expanded — adjacent
+    to terminal punctuation or at the end of a logical block. Bracketed prose
+    such as "the array [1, 2] was sorted" is left alone, and expansion never
+    makes an otherwise invalid group valid.
+
+    Terminal position is decided with the same block rules as
+    _iter_citation_blocks, not per physical line: an ordinary visual wrap is
+    not a boundary, while a blank line or a bullet marker closes the block.
+    Treating every newline as a boundary would expand bracketed prose that
+    merely happens to wrap, silently rewriting it into a citation.
+    """
+
+    lines = answer.split("\n")
+
+    def preceding_in_block(index: int) -> str:
+        parts: list[str] = []
+        cursor = index
+        while cursor > 0 and not _is_block_start(lines[cursor]):
+            previous = lines[cursor - 1].strip()
+            if not previous:
+                break
+            parts.append(previous)
+            cursor -= 1
+        return " ".join(reversed(parts))
+
+    def following_in_block(index: int) -> str:
+        parts: list[str] = []
+        for cursor in range(index + 1, len(lines)):
+            if _is_block_start(lines[cursor]):
+                break
+            parts.append(lines[cursor].strip())
+        return " ".join(parts)
+
+    def expand_line(index: int, line: str) -> str:
+        pieces: list[str] = []
+        cursor = 0
+        for run in _CITATION_RUN.finditer(line):
+            before = line[: run.start()].rstrip(" \t") or preceding_in_block(index)
+            after = line[run.end() :].lstrip(" \t") or following_in_block(index)
+            terminal = before.endswith(_TERMINAL_PUNCTUATION) or (
+                not after or after.startswith(_TERMINAL_PUNCTUATION)
+            )
+            if not terminal:
+                continue
+            expanded = _COMMA_CITATION_TOKEN.sub(
+                lambda match: "".join(
+                    f"[{item.strip()}]" for item in match.group("items").split(",")
+                ),
+                run.group(0),
+            )
+            pieces.append(line[cursor : run.start()])
+            pieces.append(expanded)
+            cursor = run.end()
+        pieces.append(line[cursor:])
+        return "".join(pieces)
+
+    return "\n".join(expand_line(index, line) for index, line in enumerate(lines))
+
 
 def _citation_group_rule(max_sentences: int) -> str:
     """Prompt language that must match validate_sentence_citation_coverage."""
@@ -76,13 +164,15 @@ def _citation_group_rule(max_sentences: int) -> str:
         return (
             "Every factual sentence must end with one or more bracket markers "
             "such as [1] that match a chunk label. A citation covers that "
-            "sentence only, never the following one. Write [1] not [n1]."
+            "sentence only, never the following one. Write [1] not [n1]. "
+            "Use [1][2] for multiple sources, not [1, 2]."
         )
     return (
         f"Each group of at most {max_sentences} factual sentences must end "
         "with one or more bracket markers such as [1] that match a chunk "
         "label. A citation covers the preceding sentences in that group only, "
-        "never following ones. Write [1] not [n1]."
+        "never following ones. Write [1] not [n1]. "
+        "Use [1][2] for multiple sources, not [1, 2]."
     )
 
 
@@ -339,8 +429,13 @@ def validate_citations(
     answer: str,
     chunk_count: int,
 ) -> tuple[str, tuple[str, ...]]:
-    """Keep [n] only for n in 1..chunk_count; report and strip the rest."""
+    """Keep [n] only for n in 1..chunk_count; report and strip the rest.
 
+    Terminal comma citation groups are normalized to [n][n] first, so an
+    out-of-range item inside [1, 9] is reported as [9] like any other.
+    """
+
+    answer = expand_comma_citation_groups(answer)
     invalid: list[str] = []
     seen: set[str] = set()
 
