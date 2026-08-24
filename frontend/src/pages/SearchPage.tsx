@@ -29,7 +29,7 @@ type LlmProvider = "ollama" | "gemini";
 const BM25_MODES: { id: Bm25Mode; label: string }[] = [
   { id: "default", label: "Default (k1=1.5, b=0.75)" },
   { id: "tunable", label: "Tunable" },
-  { id: "finetuned", label: "Finetuned" },
+  { id: "finetuned", label: "Calibrated" },
 ];
 
 type DisplayHit = {
@@ -1135,7 +1135,7 @@ export function SearchPage() {
                 <p className="text-sm text-ink-soft sm:col-span-2">
                   {bm25Mode === "default"
                     ? "Default mode always scores with k1=1.5 and b=0.75. Request k1/b are ignored."
-                    : "Finetuned mode uses MIR_BM25_FINETUNED_K1 and MIR_BM25_FINETUNED_B on the server. Request k1/b are ignored."}
+                    : "Calibrated mode uses the server-side MIR_BM25_FINETUNED_K1 and MIR_BM25_FINETUNED_B values chosen by the in-sample sweep. Request k1/b are ignored."}
                 </p>
               ) : null}
             </div>
