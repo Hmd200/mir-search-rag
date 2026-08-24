@@ -111,7 +111,13 @@ def _assemble_document(
 
 def _extract_pdf(path: Path) -> ExtractedDocument:
     try:
-        with pymupdf.open(path) as pdf:
+        # Open from bytes, not the path. A failed pymupdf.open(path) raises
+        # before the context manager binds, so nothing closes it, and on
+        # Windows MuPDF keeps the file handle. The caller's cleanup unlink
+        # then fails with PermissionError, which masked the real error and
+        # left the rejected upload on disk. Reading the bytes first keeps the
+        # handle ours; uploads are already capped by max_upload_size_mb.
+        with pymupdf.open(stream=path.read_bytes(), filetype="pdf") as pdf:
             if pdf.needs_pass:
                 raise DocumentProcessingError(
                     "Password-protected PDF files are not supported."
@@ -136,7 +142,10 @@ def _extract_pdf(path: Path) -> ExtractedDocument:
     except DocumentProcessingError:
         raise
     except (pymupdf.FileDataError, RuntimeError) as error:
-        raise DocumentProcessingError(f"Could not read PDF: {path.name}") from error
+        # path.name is the stored UUID, which means nothing to the uploader.
+        raise DocumentProcessingError(
+            "Could not read the PDF. The file may be corrupt or not a PDF."
+        ) from error
 
     return _assemble_document(
         title=title,

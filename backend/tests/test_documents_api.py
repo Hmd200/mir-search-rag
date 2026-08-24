@@ -549,3 +549,47 @@ def test_multiple_rollback_failures_preserve_label_order(
     assert isinstance(raised.value.__cause__, SQLAlchemyError)
     assert "rollback failed" not in str(raised.value.__cause__)
     assert "commit failed" in str(raised.value.__cause__)
+
+
+def test_corrupt_pdf_is_rejected_cleanly_and_leaves_no_file(
+    document_api: DocumentApiContext,
+) -> None:
+    """A malformed .pdf must return 422, not an unhandled 500.
+
+    pymupdf.open(path) raises before the context manager binds, so nothing
+    closes it and on Windows the file handle stays held. The cleanup unlink
+    then raised PermissionError from inside the except block, replacing the
+    DocumentProcessingError with an unhandled 500 and orphaning the upload.
+    """
+
+    response = document_api.client.post(
+        "/api/v1/documents",
+        files={"file": ("broken.pdf", b"this is not a pdf", "application/pdf")},
+    )
+
+    assert response.status_code == 422
+    detail = response.json()["detail"]
+    assert "Could not read the PDF" in detail
+    # The stored name is a UUID that means nothing to the uploader.
+    assert ".pdf" not in detail.replace("the PDF", "")
+    assert not list(document_api.settings.upload_dir.iterdir())
+
+
+def test_pdf_without_extractable_text_is_rejected_and_leaves_no_file(
+    document_api: DocumentApiContext,
+) -> None:
+    """A scanned-style PDF has pages but no text layer."""
+
+    empty_pdf = pymupdf.open()
+    empty_pdf.new_page()
+    content = empty_pdf.tobytes()
+    empty_pdf.close()
+
+    response = document_api.client.post(
+        "/api/v1/documents",
+        files={"file": ("scan.pdf", content, "application/pdf")},
+    )
+
+    assert response.status_code == 422
+    assert "no extractable text" in response.json()["detail"]
+    assert not list(document_api.settings.upload_dir.iterdir())

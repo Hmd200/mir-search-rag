@@ -63,6 +63,20 @@ class DocumentNotFoundError(DocumentServiceError):
     """Raised when a requested document ID does not exist."""
 
 
+def _discard_partial_upload(path: Path) -> None:
+    """Delete a rejected upload without masking the error being handled.
+
+    These calls run inside except blocks that re-raise the real failure. A
+    raise here would replace that failure -- turning a clean 415/422 into an
+    unhandled 500 -- so cleanup is best effort and never propagates.
+    """
+
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
 class DocumentService:
     """Coordinate filesystem storage, parsing, chunking, and SQLite metadata."""
 
@@ -126,8 +140,8 @@ class DocumentService:
             )
         except (DocumentServiceError, DocumentProcessingError):
             self.session.rollback()
-            temporary_path.unlink(missing_ok=True)
-            final_path.unlink(missing_ok=True)
+            _discard_partial_upload(temporary_path)
+            _discard_partial_upload(final_path)
             raise
         except (
             OSError,
@@ -136,8 +150,8 @@ class DocumentService:
             VectorStoreError,
         ) as error:
             self.session.rollback()
-            temporary_path.unlink(missing_ok=True)
-            final_path.unlink(missing_ok=True)
+            _discard_partial_upload(temporary_path)
+            _discard_partial_upload(final_path)
             raise DocumentServiceError(
                 "Could not store and index the uploaded document."
             ) from error
