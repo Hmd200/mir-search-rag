@@ -26,10 +26,16 @@ import { formatLatency, formatScore } from "../lib/format";
 type Algorithm = "tfidf" | "bm25" | "semantic" | "rag";
 type LlmProvider = "ollama" | "gemini";
 
+const BM25_MODE_LABELS: Record<Bm25Mode, string> = {
+  default: "Default",
+  tunable: "Tunable",
+  finetuned: "Calibrated",
+};
+
 const BM25_MODES: { id: Bm25Mode; label: string }[] = [
-  { id: "default", label: "Default (k1=1.5, b=0.75)" },
-  { id: "tunable", label: "Tunable" },
-  { id: "finetuned", label: "Calibrated" },
+  { id: "default", label: `${BM25_MODE_LABELS.default} (k1=1.5, b=0.75)` },
+  { id: "tunable", label: BM25_MODE_LABELS.tunable },
+  { id: "finetuned", label: BM25_MODE_LABELS.finetuned },
 ];
 
 type DisplayHit = {
@@ -1135,7 +1141,7 @@ export function SearchPage() {
                 <p className="text-sm text-ink-soft sm:col-span-2">
                   {bm25Mode === "default"
                     ? "Default mode always scores with k1=1.5 and b=0.75. Request k1/b are ignored."
-                    : "Calibrated mode uses the server-side MIR_BM25_FINETUNED_K1 and MIR_BM25_FINETUNED_B values chosen by the in-sample sweep. Request k1/b are ignored."}
+                    : "Calibrated mode uses server-side k1 and b selected by an in-sample evaluation sweep (macro nDCG@4, then MRR). Several settings tied, so k1=1.5 and b=0.75 were retained. Request values are ignored."}
                 </p>
               ) : null}
             </div>
@@ -1179,7 +1185,7 @@ export function SearchPage() {
           {algorithm === "bm25" && bm25Effective ? (
             <>
               {" · "}
-              {bm25Effective.mode} · k1={bm25Effective.k1} · b={bm25Effective.b}
+              {BM25_MODE_LABELS[bm25Effective.mode]} · k1={bm25Effective.k1} · b={bm25Effective.b}
             </>
           ) : null}
         </p>
