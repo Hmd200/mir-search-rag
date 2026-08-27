@@ -95,6 +95,8 @@ class KeywordPrfSearchOutcome:
 
 @dataclass(frozen=True, slots=True)
 class _CandidateSelection:
+    """Candidate chunk IDs plus whether champion lists supplied them."""
+
     chunk_ids: frozenset[str]
     total_postings: int
     postings_visited: int
@@ -132,6 +134,8 @@ class KeywordIndex:
         self._load()
 
     def _load(self) -> None:
+        """Read the persisted index, or start empty when no file exists yet."""
+
         if not self.path.exists():
             return
 
@@ -164,6 +168,8 @@ class KeywordIndex:
         chunks: dict[str, dict[str, Any]],
         documents: dict[str, list[str]],
     ) -> None:
+        """Write the index atomically via a temporary file and replace."""
+
         self.path.parent.mkdir(parents=True, exist_ok=True)
         temporary_path = self.path.with_name(f".{self.path.name}.tmp")
         payload = {
@@ -197,6 +203,8 @@ class KeywordIndex:
         chunks: dict[str, dict[str, Any]],
         documents: dict[str, list[str]],
     ) -> bool:
+        """Drop one document's chunks and postings from the given state maps."""
+
         chunk_ids = documents.pop(document_id, None)
         if chunk_ids is None:
             return False
@@ -389,6 +397,8 @@ class KeywordIndex:
         self._champion_lists = champion_lists
 
     def _average_chunk_length(self) -> float:
+        """Return mean chunk length in tokens, the avgdl term in BM25."""
+
         if not self._chunks:
             return 0.0
 
@@ -406,6 +416,8 @@ class KeywordIndex:
         top_k: int,
         retrieval_mode: str,
     ) -> None:
+        """Reject out-of-range search parameters before scoring begins."""
+
         if top_k <= 0:
             raise ValueError("top_k must be greater than zero.")
         if retrieval_mode not in {"champion", "exact"}:
@@ -762,6 +774,8 @@ class KeywordIndex:
         exact_hits: Iterable[KeywordSearchHit],
         top_k: int,
     ) -> float:
+        """Return how many chunk IDs the two ranked lists share in their top k."""
+
         approximate_ids = {hit.chunk_id for hit in approximate_hits}
         exact_ids = {hit.chunk_id for hit in exact_hits}
         denominator = min(top_k, len(exact_ids))
@@ -779,6 +793,8 @@ class KeywordIndex:
         overlap: float | None,
         latency_ms: float,
     ) -> KeywordSearchDiagnostics:
+        """Summarize which candidate path ran, for the API's scoring evidence."""
+
         if selection.total_postings:
             reduction_percentage = (
                 100.0
@@ -1025,6 +1041,8 @@ class KeywordIndex:
         beta: float,
         scoring_mode: str,
     ) -> None:
+        """Reject out-of-range Rocchio parameters before expansion runs."""
+
         if feedback_docs < 1:
             raise ValueError("feedback_docs must be greater than zero.")
         if max_expansion_terms < 0:

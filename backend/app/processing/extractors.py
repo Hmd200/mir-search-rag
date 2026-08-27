@@ -42,6 +42,8 @@ class ExtractionError(DocumentProcessingError):
 
 @dataclass(slots=True)
 class _RawSegment:
+    """One extracted page or section before offsets are assigned."""
+
     text: str
     page_number: int | None = None
     section_title: str | None = None
@@ -71,6 +73,8 @@ def _assemble_document(
     raw_segments: list[_RawSegment],
     metadata: dict[str, Any],
 ) -> ExtractedDocument:
+    """Join segments into one normalized document with stable offsets."""
+
     text_parts: list[str] = []
     segments: list[ExtractedSegment] = []
     cursor = 0
@@ -110,6 +114,8 @@ def _assemble_document(
 
 
 def _extract_pdf(path: Path) -> ExtractedDocument:
+    """Extract per-page text and titles from a PDF via PyMuPDF."""
+
     try:
         # Open from bytes, not the path. A failed pymupdf.open(path) raises
         # before the context manager binds, so nothing closes it, and on
@@ -156,6 +162,8 @@ def _extract_pdf(path: Path) -> ExtractedDocument:
 
 
 def _table_text(table: Table) -> str:
+    """Flatten one DOCX table into tab-separated rows of cell text."""
+
     rows: list[str] = []
     for row in table.rows:
         cells = [_normalize_text(cell.text) for cell in row.cells]
@@ -165,6 +173,8 @@ def _table_text(table: Table) -> str:
 
 
 def _extract_docx(path: Path) -> ExtractedDocument:
+    """Extract paragraphs, headings, and table text from a DOCX file."""
+
     try:
         document = open_docx(str(path))
     except Exception as error:
@@ -301,6 +311,8 @@ def _assert_public_http_url(url: str) -> None:
 
 
 def _join_redirect(current_url: str, location: str) -> str:
+    """Resolve a redirect target against the URL it came from."""
+
     return str(httpx.URL(current_url).join(location))
 
 

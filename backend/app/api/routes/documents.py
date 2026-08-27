@@ -52,6 +52,8 @@ def _service(
     vector_store: Annotated[ChromaVectorStore, Depends(get_vector_store)],
     embeddings: Annotated[EmbeddingProvider, Depends(get_embedding_provider)],
 ) -> DocumentService:
+    """Build a DocumentService from the request-scoped dependencies."""
+
     return DocumentService(
         session,
         settings,

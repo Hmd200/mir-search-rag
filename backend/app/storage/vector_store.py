@@ -67,6 +67,8 @@ class ChromaVectorStore:
 
     @staticmethod
     def _metadata(chunk: VectorChunk) -> dict[str, str | int]:
+        """Build the Chroma metadata payload that citations are rebuilt from."""
+
         metadata: dict[str, str | int] = {
             "document_id": chunk.document_id,
             "position": chunk.position,

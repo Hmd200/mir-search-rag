@@ -16,6 +16,8 @@ from app.storage.vector_store import VectorStoreError, open_vector_store
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Re-embed stored chunks into the active collection; return an exit code."""
+
     parser = argparse.ArgumentParser(
         description=(
             "Embed stored SQLite chunk text with the active provider and write "

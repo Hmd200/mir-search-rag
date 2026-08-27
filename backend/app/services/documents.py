@@ -364,6 +364,8 @@ class DocumentService:
         destination: Path,
         max_size_bytes: int,
     ) -> tuple[int, str]:
+        """Stream an upload to a temp file, enforcing the size cap and hashing it."""
+
         digest = hashlib.sha256()
         total_size = 0
 

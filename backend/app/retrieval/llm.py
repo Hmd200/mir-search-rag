@@ -48,6 +48,8 @@ class OllamaClient:
         self._timeout = timeout
 
     def generate(self, system_prompt: str, user_prompt: str) -> str:
+        """Send system and user prompts to the model and return its reply."""
+
         url = f"{self._base_url}/api/chat"
         payload = {
             "model": self._model,
@@ -101,6 +103,8 @@ class GeminiClient:
         self._timeout = timeout
 
     def generate(self, system_prompt: str, user_prompt: str) -> str:
+        """Send system and user prompts to the model and return its reply."""
+
         url = f"{self._base_url}/models/{self._model}:generateContent"
         payload = {
             "system_instruction": {"parts": [{"text": system_prompt}]},
@@ -142,6 +146,8 @@ class GeminiClient:
 
 
 def _gemini_text(body: dict[str, object]) -> str:
+    """Pull the answer text out of a Gemini generateContent response."""
+
     candidates = body.get("candidates")
     if not isinstance(candidates, list) or not candidates:
         raise LLMError("The language model returned an empty response.")

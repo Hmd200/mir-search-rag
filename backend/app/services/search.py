@@ -57,6 +57,8 @@ class KeywordSearchService:
         self._reranker = reranker
 
     def _ensure_reranker(self) -> CrossEncoderReranker:
+        """Load the cross-encoder on first use, or None when unavailable."""
+
         if self._reranker is None:
             self._reranker = reranker_from_settings()
         return self._reranker
@@ -68,6 +70,8 @@ class KeywordSearchService:
         *,
         top_n: int,
     ) -> list[KeywordSearchRecord]:
+        """Reorder hits by cross-encoder score, preserving chunk provenance."""
+
         ranked = self._ensure_reranker().rerank(
             query,
             records,
@@ -211,6 +215,8 @@ class KeywordSearchService:
         self,
         hits: list[KeywordSearchHit],
     ) -> list[KeywordSearchRecord]:
+        """Attach stored chunk text and citation metadata to ranked hits."""
+
         if not hits:
             return []
 

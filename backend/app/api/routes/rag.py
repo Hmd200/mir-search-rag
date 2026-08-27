@@ -29,6 +29,8 @@ def _chunk_payload(
     *,
     prompt_index: int | None = None,
 ) -> RagCitedChunk:
+    """Convert a cited or context chunk into its API response model."""
+
     return RagCitedChunk(
         chunk_id=chunk.chunk_id,
         document_id=chunk.document_id,

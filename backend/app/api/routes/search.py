@@ -47,6 +47,8 @@ def _resolve_bm25_parameters(
 def _expansion_payload(
     expansion: PrfExpansion | None,
 ) -> PrfExpansionResponse | None:
+    """Convert Rocchio expansion terms into the API's chip payload."""
+
     if expansion is None:
         return None
     return PrfExpansionResponse(
@@ -59,6 +61,8 @@ def _expansion_payload(
 
 
 def _result_payload(records: list) -> list[KeywordSearchResult]:
+    """Convert one ranked chunk into its search-result response model."""
+
     return [
         KeywordSearchResult(
             chunk_id=record.chunk_id,

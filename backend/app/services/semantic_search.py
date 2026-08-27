@@ -39,6 +39,12 @@ class SemanticSearchService:
         self.embeddings = embeddings
 
     def search(self, query: str, *, top_k: int) -> list[SemanticSearchRecord]:
+        """Embed the query and return the nearest stored chunks.
+
+        Uses the same active embedding provider that indexed the documents, so
+        query and document vectors always share one space.
+        """
+
         hits = self.vector_store.search(
             query,
             self.embeddings,

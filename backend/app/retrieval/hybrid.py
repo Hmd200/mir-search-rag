@@ -68,6 +68,12 @@ def retrieval_sources(
     has_dense: bool,
     has_bm25: bool,
 ) -> tuple[RetrievalSource, ...]:
+    """Report which arms retrieved a chunk, in dense-then-BM25 order.
+
+    Provenance is kept per chunk so the UI can show that a result came from
+    the lexical arm alone, and so a missing arm renders as n/a rather than 0.
+    """
+
     sources: list[RetrievalSource] = []
     if has_dense:
         sources.append("dense")
@@ -106,6 +112,14 @@ def is_lexically_strong(
     coverage_min: float,
     idf_coverage_min: float,
 ) -> bool:
+    """Decide whether BM25 evidence alone justifies keeping a chunk.
+
+    The dense cosine floor cannot admit a vocabulary-mismatch answer that only
+    the lexical arm found. A chunk passes here when BM25 retrieved it and it
+    clears both the plain and IDF-weighted query-term coverage floors, so rare
+    terms count for more than common ones.
+    """
+
     return (
         bm25_score is not None
         and coverage is not None

@@ -51,6 +51,8 @@ class SentenceTransformerEmbeddingProvider:
         self._lock = RLock()
 
     def _get_model(self) -> SentenceTransformer:
+        """Load the sentence-transformer once, on first use, under a lock."""
+
         with self._lock:
             if self._model is None:
                 self.cache_dir.mkdir(parents=True, exist_ok=True)
@@ -67,6 +69,8 @@ class SentenceTransformerEmbeddingProvider:
             return self._model
 
     def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        """Embed a batch of document chunks as normalized vectors."""
+
         if not texts:
             return []
         try:
@@ -82,6 +86,8 @@ class SentenceTransformerEmbeddingProvider:
         return vectors.tolist()
 
     def embed_query(self, query: str) -> list[float]:
+        """Embed one search query with the same encoder used for documents."""
+
         if not query.strip():
             raise EmbeddingError("Cannot embed an empty query.")
         return self.embed_documents([query])[0]
@@ -121,6 +127,8 @@ class GeminiEmbeddingProvider:
         self._query_task_type = query_task_type
 
     def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        """Embed a batch of document chunks as normalized vectors."""
+
         if not texts:
             return []
         if any(not text.strip() for text in texts):
@@ -130,14 +138,20 @@ class GeminiEmbeddingProvider:
         ]
 
     def embed_query(self, query: str) -> list[float]:
+        """Embed one search query with the same encoder used for documents."""
+
         if not query.strip():
             raise EmbeddingError("Cannot embed an empty query.")
         return self._embed_text(query, self._query_task_type)
 
     def _endpoint(self) -> str:
+        """Build the provider's embedContent URL for the configured model."""
+
         return f"{self._base_url}/models/{self._model}:embedContent"
 
     def _payload(self, text: str, task_type: str) -> dict[str, object]:
+        """Build the embedContent request body for one text and task type."""
+
         return {
             "contents": [{"parts": [{"text": text}]}],
             "embedding_config": {
@@ -147,6 +161,8 @@ class GeminiEmbeddingProvider:
         }
 
     def _embed_text(self, text: str, task_type: str) -> list[float]:
+        """Embed one text, mapping transport and API failures to EmbeddingError."""
+
         headers = {
             "Content-Type": "application/json",
             "x-goog-api-key": self._api_key,
@@ -184,6 +200,8 @@ class GeminiEmbeddingProvider:
 
 
 def _vectors_from_response(body: object, *, expected_count: int) -> list[object]:
+    """Extract the vector list, accepting both singular and plural response shapes."""
+
     if not isinstance(body, dict):
         raise EmbeddingError("The embedding provider returned an invalid response.")
 
@@ -200,6 +218,13 @@ def _vectors_from_response(body: object, *, expected_count: int) -> list[object]
 
 
 def _normalized_vector(item: object, dimensions: int) -> list[float]:
+    """Validate one returned vector and rescale it to unit length.
+
+    Rejects wrong dimensionality, non-numeric or non-finite components, and
+    zero vectors, so a malformed response fails loudly instead of poisoning
+    the index with an unusable embedding.
+    """
+
     if not isinstance(item, dict):
         raise EmbeddingError("The embedding provider returned an invalid response.")
     values = item.get("values")

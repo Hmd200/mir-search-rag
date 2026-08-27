@@ -48,6 +48,8 @@ def create_app() -> FastAPI:
 
     @application.get("/", tags=["System"])
     async def service_info() -> dict[str, str]:
+        """Return service name, version, and links to health and API docs."""
+
         return {
             "name": settings.app_name,
             "version": settings.app_version,

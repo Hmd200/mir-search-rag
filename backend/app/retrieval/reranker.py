@@ -111,6 +111,8 @@ class CrossEncoderReranker:
 
         def _passthrough() -> list[RerankResult]:
             # Keep the retrieval order; do not invent a cross-encoder score.
+            """Return candidates unchanged when no cross-encoder is available."""
+
             return [
                 RerankResult(
                     chunk=chunk,
