@@ -823,7 +823,7 @@ def _format_sweep_markdown(
     )
     lines.append("")
     lines.append(
-        "These values are the finetuned defaults "
+        "These values are the calibrated defaults "
         "(`MIR_BM25_FINETUNED_K1` / `MIR_BM25_FINETUNED_B`)."
     )
     lines.append("")

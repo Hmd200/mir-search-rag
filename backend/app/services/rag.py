@@ -852,7 +852,7 @@ class RagService:
             )
         if keyword_index is not None and (bm25_k1 is None or bm25_b is None):
             raise ValueError(
-                "Finetuned BM25 k1 and b are required when hybrid retrieval "
+                "Calibrated BM25 k1 and b are required when hybrid retrieval "
                 "is wired."
             )
         self._search = search
@@ -1115,7 +1115,7 @@ class RagService:
             return [_dense_only_context(hit) for hit in dense_hits]
         if self._bm25_k1 is None or self._bm25_b is None:
             raise ValueError(
-                "Finetuned BM25 k1 and b are required when hybrid retrieval "
+                "Calibrated BM25 k1 and b are required when hybrid retrieval "
                 "is wired."
             )
         bm25_hits = self._keyword_index.search_bm25(

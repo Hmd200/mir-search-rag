@@ -148,7 +148,7 @@ def bm25_search(
     beta: Annotated[float | None, Query()] = None,
     use_reranker: Annotated[bool | None, Query()] = None,
 ) -> BM25SearchResponse:
-    """Search indexed chunks using Okapi BM25 in default, tunable, or finetuned mode."""
+    """Search indexed chunks using Okapi BM25 in default, tunable, or calibrated mode."""
 
     started = perf_counter()
     resolved_mode, effective_k1, effective_b = _resolve_bm25_parameters(

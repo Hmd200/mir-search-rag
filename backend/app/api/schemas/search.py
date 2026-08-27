@@ -4,6 +4,10 @@ from typing import Literal
 
 from pydantic import BaseModel
 
+# The "finetuned" member is the wire value for the mode the UI labels
+# "Calibrated". No model is trained: it selects server-side BM25 k1/b chosen
+# by an in-sample parameter sweep. The spelling is kept because it is the
+# established API value and matches the MIR_BM25_FINETUNED_* settings.
 Bm25Mode = Literal["default", "tunable", "finetuned"]
 
 

@@ -246,4 +246,4 @@ P@4 is 0.292 in every cell, so it cannot rank parameter pairs.
 
 **Selected:** `k1=1.5`, `b=0.75` (tied macro nDCG@4 and MRR; retained standard empirical baseline k1=1.5, b=0.75).
 
-These values are the finetuned defaults (`MIR_BM25_FINETUNED_K1` / `MIR_BM25_FINETUNED_B`).
+These values are the calibrated defaults (`MIR_BM25_FINETUNED_K1` / `MIR_BM25_FINETUNED_B`).

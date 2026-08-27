@@ -809,7 +809,7 @@ function RagResults({
 }
 
 // Search UI: dispatches TF-IDF, BM25, semantic, and RAG; exposes PRF,
-// BM25 modes (default / tunable / finetuned), query rewriting, and the
+// BM25 modes (Default / Tunable / Calibrated; "finetuned" on the wire),
 // cross-encoder reranker as toggles.
 export function SearchPage() {
   const [query, setQuery] = useState("");

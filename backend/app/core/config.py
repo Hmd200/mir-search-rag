@@ -88,6 +88,12 @@ class Settings(BaseSettings):
     rag_max_sentences_per_citation_group: int = Field(default=2, ge=1, le=8)
     rag_lexical_coverage_min: float = Field(default=0.60, ge=0.0, le=1.0)
     rag_lexical_idf_coverage_min: float = Field(default=0.40, ge=0.0, le=1.0)
+    # "finetuned" here is the internal spelling of the mode, not neural
+    # fine-tuning: nothing is trained. These are BM25 hyperparameters chosen
+    # by an in-sample grid sweep over the 12-query evaluation gold set
+    # (macro nDCG@4, MRR as tie-breaker). 11 of 16 cells tied, so the standard
+    # empirical pair 1.5 / 0.75 was retained. The UI calls this mode
+    # "Calibrated"; see README section 8.
     bm25_finetuned_k1: float = Field(default=1.5, gt=0.0, le=10.0)
     bm25_finetuned_b: float = Field(default=0.75, ge=0.0, le=1.0)
 

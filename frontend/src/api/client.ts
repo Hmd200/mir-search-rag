@@ -65,6 +65,9 @@ export type KeywordSearchResponse = {
   reranked: boolean;
 };
 
+// "finetuned" is the wire value for the mode shown in the UI as "Calibrated".
+// No model is trained: it selects server-side BM25 k1/b chosen by an in-sample
+// parameter sweep. See BM25_MODE_LABELS in SearchPage for the display mapping.
 export type Bm25Mode = "default" | "tunable" | "finetuned";
 
 export type BM25SearchResponse = {
