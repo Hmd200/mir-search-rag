@@ -17,6 +17,16 @@ A full-stack search engine that keeps a **hand-built inverted index** and a **Ch
 
 Lexical scoring is implemented from scratch (postings, TF-IDF cosine, Okapi BM25, champion lists, Rocchio PRF). Semantic search and RAG default to local `sentence-transformers/all-MiniLM-L6-v2` embeddings; **Gemini** embeddings (`gemini-embedding-001` through AvalAI) are optional via `MIR_EMBEDDING_PROVIDER=gemini` and use a separate Chroma collection. Generation defaults to **Ollama** (`qwen3:8b`); **Gemini** is an optional RAG toggle when `MIR_GEMINI_API_KEY` is set.
 
+### A note on the name `finetuned`
+
+BM25's third mode is called **Calibrated** everywhere a user can see it — the mode selector, the results summary, the API documentation at `/docs`, and this README.
+
+Internally, the same mode is still spelled `finetuned`: the API value is `bm25_mode=finetuned` and the settings are `MIR_BM25_FINETUNED_K1` / `MIR_BM25_FINETUNED_B`.
+
+**That name means parameter calibration, not neural fine-tuning. No model is trained anywhere in this project.** The mode selects two BM25 hyperparameters (`k1`, `b`) chosen by an offline grid sweep over a 12-query gold set, scored by macro nDCG@4 with MRR as the tie-breaker. 11 of the 16 grid cells tied, so the standard empirical pair `k1=1.5`, `b=0.75` was kept rather than claiming an improvement the evidence does not support. Section 8 reports the sweep in full.
+
+The internal spelling is retained because it is the established API value and configuration key; renaming it would be a contract and configuration migration with no functional benefit. Each of those declarations carries a comment saying the same thing — see `backend/app/core/config.py`, `backend/app/api/schemas/search.py`, `frontend/src/api/client.ts`, and `.env.example`.
+
 ---
 
 ## 2. Architecture
@@ -75,6 +85,20 @@ Lexical preprocessing: Unicode tokenization, stop-word removal, **Porter stemmin
 ---
 
 ## 4. Features (mapped to the spec)
+
+### Rubric map
+
+| Rubric category | Pts | Where it lives |
+|---|---:|---|
+| Data processing & indexing | 20 | `processing/extractors.py` (PyMuPDF, python-docx, trafilatura), `processing/chunker.py` (500/75 word windows), `storage/keyword_index.py`, `storage/vector_store.py` |
+| Index synchronization | 15 | `services/documents.py` — one add path and one delete path, each with isolated per-step rollback |
+| Classical retrieval | 20 | `storage/keyword_index.py` — TF-IDF `ltc.ltc` cosine, Okapi BM25, champion lists with exact fallback |
+| Query expansion (PRF) | 10 | `storage/keyword_index.py` — Rocchio (`α=1`, `β=0.75`), expansion terms surfaced as UI chips |
+| Semantic RAG pipeline | 20 | `services/semantic_search.py`, `services/rag.py`, `retrieval/llm.py` — dense retrieval, generation, citation validation, grounding verification |
+| UI & system integration | 15 | `frontend/src/pages/AdminPage.tsx`, `frontend/src/pages/SearchPage.tsx` |
+| **Bonus** web scraping | +5 | `processing/extractors.py` — `extract_from_url` with SSRF guard |
+| **Bonus** visualization | +5 | `SearchPage.tsx` — term-contribution highlighting, keyword heatmap, document-relation graph |
+| **Bonus** advanced RAG | +5 | `services/rag.py`, `retrieval/hybrid.py`, `retrieval/reranker.py` — query rewrite, hybrid RRF, cross-encoder rerank |
 
 ### Required
 
@@ -217,7 +241,7 @@ Google AI Studio keys work with the default base (`https://generativelanguage.go
 
 The submitted and demonstrated configuration is **local MiniLM embeddings** (`MIR_EMBEDDING_PROVIDER=local`) with Chroma collection `mir_chunks`. Gemini embeddings are an **optional experimental provider**, not a recommended default and **not shown to improve retrieval** on this corpus:
 
-- On the 3-document corpus, Gemini cosine scores for relevant and irrelevant chunks **overlap badly** — the score distribution is compressed and high across the board (top-1 ≈ `0.70` on a query whose MiniLM top-1 is ≈ `0.28`). Relevance is not separable by an absolute threshold in the way MiniLM's is.
+- When this was measured (a 3-document corpus at the time), Gemini cosine scores for relevant and irrelevant chunks **overlapped badly** — the score distribution is compressed and high across the board (top-1 ≈ `0.70` on a query whose MiniLM top-1 is ≈ `0.28`). Relevance is not separable by an absolute threshold in the way MiniLM's is.
 - `MIR_RAG_MIN_RETRIEVAL_SCORE` (`0.30`) is a **dense-cosine floor calibrated against MiniLM**. It is meaningless against Gemini's compressed distribution and was never recalibrated for it. Running RAG on Gemini embeddings therefore applies a threshold that does not correspond to the score scale in use.
 - Document embedding is **serial: one HTTP request per chunk**, with no batching and no retry on `429`/`5xx`. Uploads are correspondingly slower and more fragile than local MiniLM, and add a network dependency to indexing.
 
@@ -345,7 +369,7 @@ That is the scale at which PRF and semantic search are visible here. A larger, m
 - **Older uploads** indexed before page-spanning chunks keep the old one-page-per-chunk split until re-uploaded.
 - **LLM:** Ollama is default; Gemini generation needs `MIR_GEMINI_API_KEY`. Gemini embeddings are a separate switch (`MIR_EMBEDDING_PROVIDER`) and a separate Chroma collection; they are not a claim of better retrieval than MiniLM.
 - **Gemini embeddings are experimental and uncalibrated.** Their cosine scores for relevant and irrelevant chunks overlap badly on this corpus, and `MIR_RAG_MIN_RETRIEVAL_SCORE` (`0.30`) is a MiniLM-calibrated floor that does not transfer to their compressed score scale. Document embedding is serial (one HTTP request per chunk, no batching, no `429`/`5xx` retry). The submitted configuration uses local MiniLM; see section 5.
-- **RAG generation is non-deterministic.** Repeated identical RAG requests do not always produce the same outcome, since generation is sampled. Abstention is the safe outcome, not a crash. After the comma-citation fix (section 3), both providers answered the two tested BM25 parameter questions 4/4; Gemini correctly abstained on the tested Mars and CNN negatives, and Ollama on the tested Mars negative. Before that fix Gemini frequently abstained on answerable questions because it writes `[1, 2]`. These are small live samples on a 3-document corpus, not a benchmark. Long natural-language questions can still fail the retrieval gate with `low_relevance` on this 3-document corpus, and a model that replies with a markdown bullet list is rejected by the plain-prose rule and retried.
+- **RAG generation is non-deterministic.** Repeated identical RAG requests do not always produce the same outcome, since generation is sampled. Abstention is the safe outcome, not a crash. After the comma-citation fix (section 3), both providers answered the two tested BM25 parameter questions 4/4; Gemini correctly abstained on the tested Mars and CNN negatives, and Ollama on the tested Mars negative. Before that fix Gemini frequently abstained on answerable questions because it writes `[1, 2]`. These are small live samples on a course-sized corpus, not a benchmark. Long natural-language questions can still fail the retrieval gate with `low_relevance` at this corpus size, and a model that replies with a markdown bullet list is rejected by the plain-prose rule and retried.
 - **RAG grounding:** Successful answers go through a same-model grounding rewrite; each accepted citation group of at most two factual sentences must end with an in-range citation, and verifier failure abstains. Same-model verification is best-effort and is not a formal entailment guarantee—hallucinations remain possible. Grounding verification adds one LLM call to successful RAG generation.
 - **RAG answer-relevance.** Grounding checks claim support, not whether the answer addresses the asked property. A supported but off-target answer (for example a related count instead of the specific one requested) can still be returned. A single-call structured verdict was attempted and did not close this gap without adding a second LLM call.
 - **RAG lexical false positives.** Hybrid retrieval admits some dense-weak, BM25-strong questions that have no answer in the corpus. Safe downstream abstention (`model_abstained`, `citation_failure`, or `grounding_failure`) is acceptable; an unsupported answer is not. Calibration of the coverage / IDF-coverage floors was on a small corpus, so phrasing changes can straddle the gate.
