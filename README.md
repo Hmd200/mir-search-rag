@@ -373,15 +373,16 @@ That is the scale at which PRF and semantic search are visible here. A larger, m
 - **RAG grounding:** Successful answers go through a same-model grounding rewrite; each accepted citation group of at most two factual sentences must end with an in-range citation, and verifier failure abstains. Same-model verification is best-effort and is not a formal entailment guarantee—hallucinations remain possible. Grounding verification adds one LLM call to successful RAG generation.
 - **RAG answer-relevance.** Grounding checks claim support, not whether the answer addresses the asked property. A supported but off-target answer (for example a related count instead of the specific one requested) can still be returned. A single-call structured verdict was attempted and did not close this gap without adding a second LLM call.
 - **RAG lexical false positives.** Hybrid retrieval admits some dense-weak, BM25-strong questions that have no answer in the corpus. Safe downstream abstention (`model_abstained`, `citation_failure`, or `grounding_failure`) is acceptable; an unsupported answer is not. Calibration of the coverage / IDF-coverage floors was on a small corpus, so phrasing changes can straddle the gate.
-- **Demo video** is the remaining submission item (section 10).
 
 ---
 
 ## 10. Video demonstration
 
-*Link to be added last (5–7 minutes).*
+**Watch:** https://drive.google.com/file/d/1nxe5bdAecuFlUmirmeJ0r-Kq4iskhpf_/view
 
-Required shots:
+Recorded 29 August 2026 against commit `91b4151`. Shared as *Anyone with the link — Viewer*; no Google account is required.
+
+Shots covered:
 
 1. Upload a document, then search it.
 2. Delete it, then show it gone from lexical **and** semantic/RAG.
