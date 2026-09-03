@@ -1,6 +1,7 @@
 # Dual-Engine Document Search & RAG
 
 **Course:** Modern Information Retrieval — Final Project  
+**Instructor:** Dr. Ghahramani  
 **Author:** Hamed Zare  
 **Repository:** https://github.com/Hmd200/mir-search-rag
 
